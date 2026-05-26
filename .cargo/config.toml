@@ -1,0 +1,15 @@
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+[target.riscv32imac-unknown-none-elf]
+runner  = "probe-rs run --chip ESP32-C3"
+rustflags = [
+    "-C", "link-arg=-Tlink.x",
+    "-C", "link-arg=-Tdefmt.x",
+]
+
+[alias]
+asm     = "objdump --release -- -d"
+size    = "bloat --release --crates"
+sym     = "nm --release -- --print-size"
+check   = "clippy -- -D warnings -D clippy::pedantic"
