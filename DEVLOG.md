@@ -102,3 +102,15 @@
   - Refactoring boot verification tests: 20m
 - **Metric Captured**:
   - Zero-warning compilation with cryptographic verification fully validated.
+
+## Milestone 8 — Observability & Scientific Metrics
+- **Goal**: Implement non-blocking atomic performance counters and stream a telemetry dashboard over RTT.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: `dump_metrics` was flagged as unused by the compiler because the task loop wasn't calling it.
+    - *Fix*: Integrated a periodic execution call inside `task_a` (every 10 loop iterations) to invoke the metrics dumper.
+- **Time Log**:
+  - Structuring metrics module and atomic registers: 25m
+  - Wiring context-switch cycle latency measurements: 20m
+  - Integrating exception tracking for PMP access faults: 15m
+- **Metric Captured**:
+  - Built cleanly with telemetry active and verified.

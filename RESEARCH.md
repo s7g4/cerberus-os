@@ -124,3 +124,13 @@ In signature verification, standard byte comparisons (like `==` or `memcmp`) exi
 To prevent this, we use constant-time verification:
 ```rust
 expected.iter().zip(actual.iter()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+
+## 10. Real-Time Telemetry and Atomic Performance
+
+### Non-Intrusive JTAG RTT DMA
+- **Mechanism**: Real-Time Transfer (RTT) uses the debug probe's ability to read and write the target's RAM asynchronously via JTAG/SWD Direct Memory Access (DMA) buses.
+- **Observability Impact**: Since the JTAG hardware probe reads and writes memory buffers directly without involving the CPU, logging requires zero processor execution stalls. Unlike serial UART drivers, which block the processor, RTT has no impact on real-time task deadlines.
+
+### Atomic Operations vs. Critical Sections
+- **Atomic Operations**: Using atomic variables (`AtomicU32` with `Ordering::Relaxed`) compiles down to RISC-V hardware atomic instructions (like `amoadd.w`). These complete in 1 CPU cycle.
+- **Comparison**: Disabling interrupts globally (via critical sections) to increment a normal integer is expensive (takes 10-15 cycles to read, modify, and restore the CSRs) and increases interrupt latency. Atomic instructions eliminate lock contention safely with zero interrupt latency impact.

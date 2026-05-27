@@ -11,6 +11,7 @@ mod trap;
 mod memory;
 mod network;
 mod security;
+mod kernel;
 
 use scheduler::{BitMapScheduler, TaskControlBlock, TaskState};
 
@@ -84,7 +85,11 @@ pub fn kmain() -> ! {
 fn verify_network_and_security() {
     use network::{CanError, CanFrame, CanRingBuffer};
     use security::{compute_hmac, verify_frame, AuthFrame};
+    use kernel::metrics::{METRIC_FRAMES_RX, METRIC_FRAMES_DROPPED, METRIC_HMAC_FAILURES};
+    use core::sync::atomic::Ordering;
+
     defmt::info!("Executing network & cryptographic self-test...");
+
     // 1. Simulate receiving a raw 13-byte transceiver frame
     // Target ID: 0x1F0 (Standard 11-bit ID), DLC: 4, Payload: [0xAA, 0xBB, 0xCC, 0xDD]
     // ID 0x1F0 = 0b001_1111_0000.
@@ -102,6 +107,7 @@ fn verify_network_and_security() {
     match CanFrame::parse(&raw_frame) {
         Ok(frame) => {
             defmt::info!("CAN Parser: Valid frame parsed. ID=0x{:03X}, DLC={}", frame.id, frame.dlc);
+            METRIC_FRAMES_RX.fetch_add(1, Ordering::Relaxed);
             // 2. Cryptographic signature generation
             let tag = compute_hmac(&frame);
             defmt::info!("HMAC Sign: Generated tag = {:?}", tag);
@@ -110,6 +116,7 @@ fn verify_network_and_security() {
             if verify_frame(&auth) {
                 defmt::info!("HMAC Verify: Signature verification passed.");
             } else {
+                METRIC_HMAC_FAILURES.fetch_add(1, Ordering::Relaxed);
                 defmt::error!("HMAC Verify: Verification failed!");
             }
             // 4. Queue frame into lock-free ring buffer
@@ -122,14 +129,15 @@ fn verify_network_and_security() {
             }
         }
         Err(CanError::BlockedId(id)) => {
-                   defmt::warn!("CAN Parser: Blocked malicious frame ID=0x{:03X}", id);
-               }
-               Err(CanError::InvalidDlc(dlc)) => {
-                   defmt::error!("CAN Parser: Frame rejected. Invalid DLC={}", dlc);
-               }
-               Err(CanError::BufferFull) => {
-                   defmt::error!("CAN Buffer: Push failed. Queue full.");
-               }
+            METRIC_FRAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            defmt::warn!("CAN Parser: Blocked malicious frame ID=0x{:03X}", id);
+        }
+        Err(CanError::InvalidDlc(dlc)) => {
+            defmt::error!("CAN Parser: Frame rejected. Invalid DLC={}", dlc);
+        }
+        Err(CanError::BufferFull) => {
+            defmt::error!("CAN Buffer: Push failed. Queue full.");
+        }
     }
 }
 
@@ -168,8 +176,16 @@ unsafe fn init_memory_protection() {
 
 /// Task A Entry point
 extern "C" fn task_a() -> ! {
+    let mut loop_count = 0u32;
     loop {
         defmt::info!("Task A is active");
+        loop_count = loop_count.wrapping_add(1);
+
+        // Periodically dump the metrics dashboard to the host JTAG stream
+        if loop_count % 10 == 0 {
+            kernel::dump_metrics();
+        }
+
         // Busy loop representing operational work
         for _ in 0..50_000 {
             unsafe { core::arch::asm!("nop") };

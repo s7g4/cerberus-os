@@ -43,10 +43,14 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, start_cycle: usize) {
             }
             let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
             if let Some((old_sp_ptr, new_sp)) = sched.schedule() {
+                crate::kernel::metrics::METRIC_SWITCH_CYCLES.store(elapsed, Ordering::Relaxed);
                 crate::scheduler::switch_context(old_sp_ptr, new_sp);
             }
         }
         cause => {
+            if cause == 1 || cause == 5 || cause == 7 {
+                crate::kernel::metrics::METRIC_PMP_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+            }
             defmt::error!("Unhandled exception. Cause register: 0x{:08X}", cause);
             let mepc: usize;
             core::arch::asm!("csrr {}, mepc", out(reg) mepc);
