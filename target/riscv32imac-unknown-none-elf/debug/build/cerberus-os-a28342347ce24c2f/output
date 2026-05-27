@@ -1,0 +1,3 @@
+cargo:rustc-link-search=C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os\target\riscv32imac-unknown-none-elf\debug\build\cerberus-os-a28342347ce24c2f\out
+cargo:rerun-if-changed=memory.x
+cargo:rerun-if-changed=build.rs

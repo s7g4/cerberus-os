@@ -28,3 +28,13 @@ Now, a stack overflow triggers an immediate physical hardware write violation fa
 ## 4. `#[naked]` Functions in Rust
 - A `#[naked]` function is a function compiled without any compiler-generated prologue (stack allocation, register saving) or epilogue (`ret` instructions).
 - **Mandatory for Context Switchers**: A context switcher must manually control the exact state of the stack pointer (`sp`). If the compiler generates a prologue on function entry, it will save register states to the old stack *before* our assembly runs. When our code swaps the stack pointer to the new task, the compiler's epilogue will pop those values from the new stack, resulting in immediate register corruption.
+
+## 5. Crate Auditing: `panic-probe` and `critical-section`
+
+### Why `panic-probe` Failed on RISC-V
+- **Problem**: `panic-probe` checks the target architecture during compilation and emits a hard compile-time error (`compile_error!`) if the target is not a `thumbvN-none-eabi[hf]` ARM Cortex-M target. It relies on Cortex-M specific stack-frame layouts and inline ARM assembly (`bkpt` breakpoints) to signal the probe.
+- **Solution**: We bypass this target restriction by writing our own target-agnostic, bare-metal panic handler in Rust. Using the `defmt::Debug2Format` wrapper, we format the core panic payload into RTT, then safely park the processor with `wfi`.
+
+### Mutual Exclusion in a Bare-Metal Environment
+- **Problem**: RTT buffers require synchronous mutual exclusion to prevent multiple contexts (e.g., interrupts and tasks) from corrupting the logger buffer simultaneously. The `critical-section` crate provides an abstract API, but requires a platform-specific backend to be explicitly linked.
+- **Solution**: By enabling the `critical-section-single-hart` feature in the `riscv` crate, we register a bare-metal backend. This backend disables global interrupts during critical blocks by writing to the `mstatus` control and status register, satisfying the linker requirements.

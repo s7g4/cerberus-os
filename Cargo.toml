@@ -6,8 +6,7 @@ edition = "2021"
 [dependencies]
 defmt = "0.3.8"
 defmt-rtt = "0.4.1"
-panic-probe = { version = "0.3.2", features = ["print-defmt"] }
-riscv = "0.11.1"
+riscv = { version = "0.11.1", features = ["critical-section-single-hart"] }
 riscv-rt = "0.12.0"
 
 [features]

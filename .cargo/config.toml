@@ -4,6 +4,7 @@ target = "riscv32imac-unknown-none-elf"
 [target.riscv32imac-unknown-none-elf]
 runner  = "probe-rs run --chip ESP32-C3"
 rustflags = [
+    "-C", "link-arg=-Tmemory.x",
     "-C", "link-arg=-Tlink.x",
     "-C", "link-arg=-Tdefmt.x",
 ]

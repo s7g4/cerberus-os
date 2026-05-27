@@ -1,0 +1,3 @@
+cargo:rustc-link-search=C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os\target\riscv32imac-unknown-none-elf\release\build\defmt-4c526b2e5bd39edb\out
+cargo:rustc-check-cfg=cfg(c_variadic)
+cargo:rustc-check-cfg=cfg(no_cas)

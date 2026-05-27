@@ -1,0 +1,9 @@
+C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os\target\riscv32imac-unknown-none-elf\release\deps\libcritical_section-1fb1d0460997bae7.rmeta: C:\Users\Shaurya\.cargo\registry\src\index.crates.io-6f17d22bba15001f\critical-section-1.2.0\src/lib.rs C:\Users\Shaurya\.cargo\registry\src\index.crates.io-6f17d22bba15001f\critical-section-1.2.0\src\mutex.rs C:\Users\Shaurya\.cargo\registry\src\index.crates.io-6f17d22bba15001f\critical-section-1.2.0\src\../README.md
+
+C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os\target\riscv32imac-unknown-none-elf\release\deps\libcritical_section-1fb1d0460997bae7.rlib: C:\Users\Shaurya\.cargo\registry\src\index.crates.io-6f17d22bba15001f\critical-section-1.2.0\src/lib.rs C:\Users\Shaurya\.cargo\registry\src\index.crates.io-6f17d22bba15001f\critical-section-1.2.0\src\mutex.rs C:\Users\Shaurya\.cargo\registry\src\index.crates.io-6f17d22bba15001f\critical-section-1.2.0\src\../README.md
+
+C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os\target\riscv32imac-unknown-none-elf\release\deps\critical_section-1fb1d0460997bae7.d: C:\Users\Shaurya\.cargo\registry\src\index.crates.io-6f17d22bba15001f\critical-section-1.2.0\src/lib.rs C:\Users\Shaurya\.cargo\registry\src\index.crates.io-6f17d22bba15001f\critical-section-1.2.0\src\mutex.rs C:\Users\Shaurya\.cargo\registry\src\index.crates.io-6f17d22bba15001f\critical-section-1.2.0\src\../README.md
+
+C:\Users\Shaurya\.cargo\registry\src\index.crates.io-6f17d22bba15001f\critical-section-1.2.0\src/lib.rs:
+C:\Users\Shaurya\.cargo\registry\src\index.crates.io-6f17d22bba15001f\critical-section-1.2.0\src\mutex.rs:
+C:\Users\Shaurya\.cargo\registry\src\index.crates.io-6f17d22bba15001f\critical-section-1.2.0\src\../README.md:
