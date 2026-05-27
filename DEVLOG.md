@@ -28,3 +28,13 @@
 - **Metric Captured**:
   - Measured `.text` (10,246 bytes) and `.bss` (8 bytes) size using `cargo size`.
 
+## Day 3 — Context Switch Assembly
+- **Goal**: Implement a naked assembler context switcher capable of swapping execution stacks and preserving register context.
+- **What Broke & How it Was Fixed**:
+  - *No breaks*: Successfully implemented structural representations for `TaskControlBlock` using `#[repr(C)]` and naked register preservation.
+- **Time Log**:
+  - Designing TCB layouts and memory representations: 20m
+  - Writing naked assembly stack switcher: 30m
+  - Compiling and checking symbol tables: 15m
+- **Metric Captured**:
+  - Successfully linked `switch_context` symbol.

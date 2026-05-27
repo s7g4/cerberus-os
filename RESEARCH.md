@@ -38,3 +38,20 @@ Now, a stack overflow triggers an immediate physical hardware write violation fa
 ### Mutual Exclusion in a Bare-Metal Environment
 - **Problem**: RTT buffers require synchronous mutual exclusion to prevent multiple contexts (e.g., interrupts and tasks) from corrupting the logger buffer simultaneously. The `critical-section` crate provides an abstract API, but requires a platform-specific backend to be explicitly linked.
 - **Solution**: By enabling the `critical-section-single-hart` feature in the `riscv` crate, we register a bare-metal backend. This backend disables global interrupts during critical blocks by writing to the `mstatus` control and status register, satisfying the linker requirements.
+
+## 6. Context Switch Calling Conventions
+
+### RISC-V ABI Register Partitioning
+- **Caller-Saved Registers** (`ra`, `t0-t6`, `a0-a7`): Temporary registers. The calling function is responsible for pushing these to the stack if it needs to preserve their values across a function call. The callee (the function being called) is free to overwrite them without restoring them.
+- **Callee-Saved Registers** (`sp`, `s0-s11`): Preserved registers. The called function must ensure these registers hold their original values before returning. If the callee modifies them, it must save them to its stack on entry and restore them on exit.
+- **Context Switch Application**: During a voluntary or triggered context switch (`switch_context`), the compiler has already handled saving any active caller-saved registers. Thus, our assembler context switcher only needs to explicitly save and restore the callee-saved registers (`ra` and `s0-s11`).
+
+### Stack Pointer Directives
+- **Alignment**: The RISC-V calling convention mandates that the stack pointer `sp` must remain **16-byte aligned** at all times.
+- **Direction**: The stack grows downwards (decrementing `sp` allocates space).
+- **Addressing**: `sp` points to the **last used byte** (the top of the stack). Pushing a register requires allocating space first (`addi sp, sp, -offset`) and then storing (`sw reg, 0(sp)`).
+
+### The Naked Function Constraint
+- **Problem**: Standard compiler functions inject a prologue and epilogue to manage frame pointers and local stack spaces.
+- **Impact**: In a context switcher, we enter with the stack pointer of Task A, but we exit after modifying `sp` to point to the stack of Task B. If the compiler injects a prologue, it will push registers onto Task A's stack, but its epilogue will pop values from Task B's stack, corrupting Task B and triggering an immediate CPU crash.
+- **Solution**: The `#[naked]` attribute forces the compiler to emit zero prologue or epilogue code. Our assembly represents 100% of the instruction sequence.
