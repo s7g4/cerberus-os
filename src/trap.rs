@@ -36,6 +36,15 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, start_cycle: usize) {
             if tick % 10 == 0 {
                 defmt::trace!("Tick: {} (Overhead: {} cycles)", tick, elapsed);
             }
+
+            // Perform context switch if a different task is ready
+            extern "Rust" {
+                static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
+            }
+            let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+            if let Some((old_sp_ptr, new_sp)) = sched.schedule() {
+                crate::scheduler::switch_context(old_sp_ptr, new_sp);
+            }
         }
         cause => {
             defmt::error!("Unhandled exception. Cause register: 0x{:08X}", cause);

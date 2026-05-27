@@ -1,6 +1,6 @@
 # DEVLOG — Cerberus-OS
 
-## Day 1 — Environment Setup
+## Milestone 0 — Environment Setup
 - **Goal**: Establish a reproducible build and compilation environment for RISC-V M-mode.
 - **What Broke & How it Was Fixed**:
   - *No breaks yet*. Ensured tools (`probe-rs`, `flip-link`, `cargo-binutils`) are installed.
@@ -11,7 +11,7 @@
 - **Metric Captured**:
   - Toolchain target `riscv32imac-unknown-none-elf` installed successfully.
 
-## Day 2 — Kernel Skeleton
+## Milestone 1 — Kernel Skeleton
 - **Goal**: Implement a minimal valid kernel entry point that compiles, links, and is boot-observable via RTT.
 - **What Broke & How it Was Fixed**:
   - *Issue 1*: Compiling `panic-probe` failed on RISC-V since the crate is Cortex-M specific.
@@ -28,7 +28,19 @@
 - **Metric Captured**:
   - Measured `.text` (10,246 bytes) and `.bss` (8 bytes) size using `cargo size`.
 
-## Day 3 — Context Switch Assembly
+## Milestone 2 — Trap Vector & Timer Heartbeat
+- **Goal**: Implement the trap handler vector and wire up the hardware timer tick interrupts.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: 64-bit atomics are not supported in hardware on a 32-bit RISC-V target, causing compiler errors when using `AtomicU64`.
+    - *Fix*: Swapped the `AtomicU64` tick counter out for `AtomicU32`. A 32-bit counter at 100Hz will last ~497 days before overflowing.
+- **Time Log**:
+  - Writing low-level assembly trap registers and stack saving: 40m
+  - Implementing Rust trap routing: 30m
+  - Verifying hardware interrupt signals: 15m
+- **Metric Captured**:
+  - Heartbeat timer firing successfully.
+
+## Milestone 3 — Context Switch Assembly
 - **Goal**: Implement a naked assembler context switcher capable of swapping execution stacks and preserving register context.
 - **What Broke & How it Was Fixed**:
   - *No breaks*: Successfully implemented structural representations for `TaskControlBlock` using `#[repr(C)]` and naked register preservation.
@@ -38,3 +50,21 @@
   - Compiling and checking symbol tables: 15m
 - **Metric Captured**:
   - Successfully linked `switch_context` symbol.
+
+## Milestone 4 — O(1) Bitmap Scheduler
+- **Goal**: Implement the priority selection bitmap and integrate preemptive task switching inside the timer interrupt.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: Compile error in `switch.rs` stating that `asm!` is prohibited in naked functions.
+    - *Fix*: Changed `core::arch::asm!` to the newly stabilized `core::arch::naked_asm!`.
+  - *Issue 2*: Compile error stating that `options(noreturn)` is invalid inside `naked_asm!`.
+    - *Fix*: Removed the `options(noreturn)` block as `naked_asm!` operates at global scope without parameter qualifiers.
+  - *Issue 3*: Mutable static reference warnings for `SCHEDULER` borrows.
+    - *Fix*: Replaced direct borrows with raw pointers using `core::ptr::addr_of_mut!` and dereferenced inside `unsafe` blocks to adhere to Rust 2024 specifications.
+- **Time Log**:
+  - Writing `bitmap.rs` selection logic: 35m
+  - Setting up task stacks & initial frame layout: 30m
+  - Resolving `naked_asm!` syntax updates: 20m
+  - Fixing `static_mut_refs` compiler warnings: 25m
+- **Metric Captured**:
+  - Built successfully with zero compiler warnings.
+

@@ -11,7 +11,7 @@
 #[naked]
 #[no_mangle]
 pub unsafe extern "C" fn switch_context(old_sp_ptr: *mut usize, new_sp: usize) {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         // 1. Allocate frame on the current task's stack to save callee-saved registers.
         // We save 13 registers (ra + s0-s11) = 52 bytes.
         // We adjust to 64 bytes to maintain the mandatory 16-byte stack alignment.
@@ -50,6 +50,5 @@ pub unsafe extern "C" fn switch_context(old_sp_ptr: *mut usize, new_sp: usize) {
         "addi sp, sp, 64", // Deallocate stack frame
         // 5. Jump back to the restored return address (ra)
         "ret",
-        options(noreturn)
     );
 }

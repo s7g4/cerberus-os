@@ -29,3 +29,30 @@ pub struct TaskControlBlock {
     /// Debug name of the task.
     pub name: &'static str,
 }
+
+impl TaskControlBlock {
+    /// Initialize a task stack with a dummy context frame.
+    ///
+    /// The stack grows downwards, so we calculate the top of the stack,
+    /// align it, allocate space for the frame, and populate it.
+    pub fn initialize_stack(stack: &mut [u8], entry_fn: extern "C" fn() -> !) -> usize {
+        let stack_start = stack.as_ptr() as usize;
+        let stack_end = stack_start + stack.len();
+
+        // 16-byte stack alignment (ABI requirement)
+        let aligned_sp = (stack_end & !0xF) - 64;
+
+        let frame = aligned_sp as *mut usize;
+        unsafe {
+            // Store entry function in the ra slot (offset 0)
+            frame.write_volatile(entry_fn as usize);
+
+            // Clear callee-saved registers s0-s11 (offsets 4 to 48) to zero
+            for i in 1..=12 {
+                frame.add(i).write_volatile(0);
+            }
+        }
+
+        aligned_sp
+    }
+}
