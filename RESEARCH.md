@@ -1,4 +1,4 @@
-# Cerberus-OS Research Log — Phase 0
+# Cerberus-OS Research Log — Environment & Architecture
 
 ## 1. RISC-V M-Mode Privilege Model
 RISC-V defines three primary privilege levels: Machine Mode (M-mode), Supervisor Mode (S-mode), and User Mode (U-mode). 

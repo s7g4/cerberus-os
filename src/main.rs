@@ -1,63 +1,85 @@
-//! Cerberus-OS — kernel entry point.
+//! Cerberus-OS — Kernel entry point.
 //!
-//! ## Execution model
-//!
-//! On reset, the CPU begins executing at the address specified by the
-//! linker script's ENTRY symbol (here: `_start` in `link.x`). Control
-//! flows to `_start` (assembly stub) which initialises the stack pointer
-//! and calls `main` (which we map via `#[riscv_rt::entry]`).
-//! There is no OS loader, no ELF interpreter — the binary image IS the running program.
+//! Handles low-level target initialization, registers the interrupt trap vector,
+//! and configures the hardware system timer triggers.
 
 #![no_std]
 #![no_main]
-#![feature(naked_functions)] // Required for Phase 2 context switcher
-#![feature(asm_const)] // Required for inline assembly constants
+#![feature(naked_functions)]
 
-use defmt_rtt as _; // RTT transport — routes defmt logs over JTAG
+use defmt_rtt as _; // Route logs over the JTAG RTT interface
+
+mod trap;
+
+// Link the low-level assembly trap handler
+core::arch::global_asm!(include_str!("trap_entry.s"));
+
+extern "C" {
+    // Low-level trap entry point defined in trap_entry.s
+    fn _trap_entry();
+}
 
 #[riscv_rt::entry]
 fn main() -> ! {
     kmain();
 }
 
+/// Core kernel entry routine.
 pub fn kmain() -> ! {
-    // Phase 1 completion proof: system is alive and observable
-    defmt::info!("Cerberus-OS kernel booting — phase 1 alive");
-    defmt::info!(
-        "Build: {} {}",
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_VERSION")
-    );
+    defmt::info!("Booting Cerberus-OS kernel...");
 
-    // This halt loop is the placeholder for the scheduler (Phase 3)
+    unsafe {
+        // Point the Machine Trap Vector (mtvec) register to the assembly entry.
+        // Direct mode: low 2 bits are 00 (all traps jump directly to _trap_entry).
+        let trap_addr = _trap_entry as usize;
+        core::arch::asm!("csrw mtvec, {}", in(reg) trap_addr);
+
+        // Arm timer tick interrupts.
+        init_timer();
+    }
+
+    defmt::info!("System clock initialized. Global interrupts enabled.");
+
     loop {
-        // RISC-V WFI: Wait For Interrupt — CPU halts until next IRQ
+        // Halt CPU core until next interrupt fires (power saving mode)
         unsafe { core::arch::asm!("wfi") };
     }
 }
 
-/// Custom bare-metal panic handler.
+/// Configures and arms the Machine-mode Timer.
+unsafe fn init_timer() {
+    // Set first trigger threshold in memory-mapped mtimecmp.
+    // Interval: 4MHz clock frequency / 100Hz tick rate = 40,000 cycles.
+    let clint_mtime = 0x0200_BFF8 as *const u64;
+    let clint_mtimecmp = 0x0200_4000 as *mut u64;
+    clint_mtimecmp.write_volatile(clint_mtime.read_volatile() + 40_000);
+
+    // Enable Machine Timer Interrupts (MTIE - bit 7) in the mie register
+    let mie: usize;
+    core::arch::asm!("csrr {}, mie", out(reg) mie);
+    core::arch::asm!("csrw mie, {}", in(reg) mie | (1 << 7));
+
+    // Enable Global Interrupts (MIE - bit 3) in the mstatus register
+    let mstatus: usize;
+    core::arch::asm!("csrr {}, mstatus", out(reg) mstatus);
+    core::arch::asm!("csrw mstatus, {}", in(reg) mstatus | (1 << 3));
+}
+
+/// Global panic handler for bare-metal execution.
 ///
-/// On panic, we print the file, line, and payload details over RTT,
-/// and then put the processor into an infinite Wait-For-Interrupt low power sleep.
+/// Log details to JTAG RTT and freeze CPU to prevent undefined operations.
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    defmt::error!("!!! KERNEL PANIC !!!");
-
-    // Print location if available
+    defmt::error!("CRITICAL: Kernel Panic.");
     if let Some(location) = info.location() {
         defmt::error!(
-            "Location: {}:{}:{}",
+            "Source: {}:{}:{}",
             location.file(),
             location.line(),
             location.column()
         );
     }
-
-    // Print panic payload/message
-    defmt::error!("Payload: {}", defmt::Debug2Format(info));
-
-    // Safely freeze the CPU
+    defmt::error!("Details: {}", defmt::Debug2Format(info));
     loop {
         unsafe { core::arch::asm!("wfi") };
     }

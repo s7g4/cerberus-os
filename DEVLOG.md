@@ -1,6 +1,6 @@
 # DEVLOG — Cerberus-OS
 
-## Day 1 — Phase 0 Environment Setup
+## Day 1 — Environment Setup
 - **Goal**: Establish a reproducible build and compilation environment for RISC-V M-mode.
 - **What Broke & How it Was Fixed**:
   - *No breaks yet*. Ensured tools (`probe-rs`, `flip-link`, `cargo-binutils`) are installed.
@@ -11,7 +11,7 @@
 - **Metric Captured**:
   - Toolchain target `riscv32imac-unknown-none-elf` installed successfully.
 
-## Day 2 — Phase 1 Kernel Skeleton
+## Day 2 — Kernel Skeleton
 - **Goal**: Implement a minimal valid kernel entry point that compiles, links, and is boot-observable via RTT.
 - **What Broke & How it Was Fixed**:
   - *Issue 1*: Compiling `panic-probe` failed on RISC-V since the crate is Cortex-M specific.
