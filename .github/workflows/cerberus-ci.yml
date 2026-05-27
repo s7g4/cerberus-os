@@ -25,8 +25,11 @@ jobs:
           targets: riscv32imac-unknown-none-elf
           components: llvm-tools-preview
 
-      - name: Install cargo-binutils
-        run: cargo install cargo-binutils
+      - name: Add LLVM tools to PATH
+        run: |
+          SYSROOT=$(rustc --print sysroot)
+          HOST=$(rustc -vV | grep host | awk '{print $2}')
+          echo "$SYSROOT/lib/rustlib/$HOST/bin" >> $GITHUB_PATH
 
       - name: Compile Kernel
         run: cargo build --release --target riscv32imac-unknown-none-elf
@@ -34,20 +37,20 @@ jobs:
       # Enforce binary size budget (32KB for kernel)
       - name: Enforce binary size budget
         run: |
-          SIZE=$(cargo-size --release --target riscv32imac-unknown-none-elf -- -A | grep '\.text' | awk '{print $2}')
+          SIZE=$(llvm-size target/riscv32imac-unknown-none-elf/release/cerberus-os -A | grep '\.text' | awk '{print $2}')
           echo "Binary .text = ${SIZE} bytes"
           [ "$SIZE" -le "32768" ] || { echo "FAIL: ${SIZE} > 32768"; exit 1; }
 
       # Verify zero heap allocations
       - name: Verify zero heap allocations
         run: |
-          ALLOC=$(cargo-nm --release --target riscv32imac-unknown-none-elf | grep -c '__rust_alloc' || true)
+          ALLOC=$(llvm-nm target/riscv32imac-unknown-none-elf/release/cerberus-os | grep -c '__rust_alloc' || true)
           echo "Allocator symbols found: $ALLOC"
           [ "$ALLOC" -eq "0" ] || { echo "FAIL: heap allocator linked in"; exit 1; }
 
       # Verify zero FPU instructions
       - name: Verify zero FPU instructions
         run: |
-          FPU=$(cargo-objdump --release --target riscv32imac-unknown-none-elf -- -d | grep -cE 'fadd|fmul|fdiv|fsub' || true)
+          FPU=$(llvm-objdump target/riscv32imac-unknown-none-elf/release/cerberus-os -d | grep -cE 'fadd|fmul|fdiv|fsub' || true)
           echo "FPU instructions: $FPU"
           [ "$FPU" -eq "0" ] || { echo "FAIL: FPU instructions emitted"; exit 1; }
