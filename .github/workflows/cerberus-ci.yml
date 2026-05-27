@@ -37,7 +37,7 @@ jobs:
       # Enforce binary size budget (32KB for kernel)
       - name: Enforce binary size budget
         run: |
-          SIZE=$(llvm-size target/riscv32imac-unknown-none-elf/release/cerberus-os -A | grep '\.text' | awk '{print $2}')
+          SIZE=$(llvm-size target/riscv32imac-unknown-none-elf/release/cerberus-os -A | awk '$1 == ".text" {print $2}')
           echo "Binary .text = ${SIZE} bytes"
           [ "$SIZE" -le "32768" ] || { echo "FAIL: ${SIZE} > 32768"; exit 1; }
 
