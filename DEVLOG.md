@@ -129,3 +129,16 @@
   - Resolving Clippy and formatting errors: 25m
 - **Metric Captured**:
   - Automated CI check verified. Local formatting and clippy checks pass cleanly.
+
+## Milestone 10 — Performance Benchmarking & Stress Testing
+- **Goal**: Measure real-time execution cycle overheads using hardware registers and execute system stress tests.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: Running the size checks in CI failed due to duplicate regex matches on `.text` (matching both `.text` and `.text.dummy`).
+    - *Fix*: Refactored size checking command from using simple `grep` to exact field equality check via `awk '$1 == ".text" {print $2}'`.
+- **Time Log**:
+  - Writing cycle-accurate assembly probes: 15m
+  - Implementing high-frequency CAN load task: 30m
+  - Profiling subsystems and updating registries: 20m
+  - Fixing CI `.text` matching issues: 15m
+- **Metric Captured**:
+  - Measured context switch (54 cycles), CAN queue operations (18 cycles), and HMAC validation (8924 cycles) cycle counts.

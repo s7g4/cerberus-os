@@ -149,3 +149,20 @@ To guarantee that the compiled binary does not link a heap allocator (complying 
 
 ### Enforcing Zero Floating-Point Unit (FPU) Usage
 Floating-point calculations (single or double precision) require save/restore context overhead on context switches. In microcontrollers running without an FPU or where context switches must remain under 50 cycles, we must ensure the compiler only emits integer instructions. By running `cargo-objdump` and searching for floating-point opcodes (`fadd`, `fmul`, `fdiv`, `fsub`), we statically verify that the compiler has not emitted FPU instructions.
+
+## 13. Dynamic Hardware-Level Performance Benchmarking
+
+### The RISC-V Cycle Counter CSR (`mcycle`)
+The RISC-V privileged architecture defines the `mcycle` CSR (Control and Status Register) as a 64-bit counter that increments on every CPU clock cycle. On 32-bit hardware targets (RV32), this is mapped to two 32-bit registers: `mcycle` (low 32 bits) and `mcycleh` (high 32 bits).
+For hot-path latency profiling (such as measuring the execution time of a cryptographic hash or a lock-free queue push), reading the low 32-bit `mcycle` register alone is highly efficient. At a CPU frequency of 160 MHz, a 32-bit register wraps around every:
+```ld
+2^32 / 160,000,000 ≈ 26.84 seconds
+```
+Because the operations under profile (e.g., HMAC validation) complete within microseconds (thousands of cycles), the 32-bit counter will never wrap around more than once during a single measurement.
+
+### Safe Wrap-Around Cycle Arithmetic
+To calculate the elapsed CPU cycles between a start time `t_start` and an end time `t_end` without branching or conditional checks (which would inject pipeline stalls and distort the measurement), we utilize standard unsigned wrapping subtraction:
+```rust
+let elapsed = t_end.wrapping_sub(t_start);
+```
+Under two's complement integer representation, if the counter overflows and wraps around to `0` after `t_start` but before `t_end`, the subtraction `t_end - t_start` automatically resolves to the correct modular difference. This guarantees cycle-accurate results under all conditions with zero branching overhead.

@@ -83,20 +83,28 @@ pub fn kmain() -> ! {
     }
 }
 
+#[inline(always)]
+fn read_cycles() -> u32 {
+    let cycles: u32;
+    unsafe {
+        core::arch::asm!("csrr {0}, mcycle", out(reg) cycles);
+    }
+    cycles
+}
+
 /// Verification routine to test the CAN parser, ring buffer, and HMAC authentication on boot.
 fn verify_network_and_security() {
     use core::sync::atomic::Ordering;
-    use kernel::metrics::{METRIC_FRAMES_DROPPED, METRIC_FRAMES_RX, METRIC_HMAC_FAILURES};
+    use kernel::metrics::{
+        METRIC_CAN_PARSE_CYCLES, METRIC_CAN_QUEUE_CYCLES, METRIC_FRAMES_DROPPED, METRIC_FRAMES_RX,
+        METRIC_HMAC_FAILURES, METRIC_HMAC_VERIFY_CYCLES,
+    };
     use network::{CanError, CanFrame, CanRingBuffer};
     use security::{compute_hmac, verify_frame, AuthFrame};
 
     defmt::info!("Executing network & cryptographic self-test...");
 
     // 1. Simulate receiving a raw 13-byte transceiver frame
-    // Target ID: 0x1F0 (Standard 11-bit ID), DLC: 4, Payload: [0xAA, 0xBB, 0xCC, 0xDD]
-    // ID 0x1F0 = 0b001_1111_0000.
-    // Byte 0 (MSB) = 0x1F0 >> 3 = 0b0011_1110 = 0x3E
-    // Byte 1 (LSB) = (0x1F0 & 0x07) << 5 = 0b000_00000 = 0x00
     let mut raw_frame = [0u8; 13];
     raw_frame[0] = 0x3E;
     raw_frame[1] = 0x00;
@@ -105,8 +113,14 @@ fn verify_network_and_security() {
     raw_frame[4] = 0xBB;
     raw_frame[5] = 0xCC;
     raw_frame[6] = 0xDD;
-    // Parse raw buffer
-    match CanFrame::parse(&raw_frame) {
+
+    // Parse raw buffer and measure cycle latency
+    let start_parse = read_cycles();
+    let parsed = CanFrame::parse(&raw_frame);
+    let end_parse = read_cycles();
+    METRIC_CAN_PARSE_CYCLES.store(end_parse.wrapping_sub(start_parse), Ordering::Relaxed);
+
+    match parsed {
         Ok(frame) => {
             defmt::info!(
                 "CAN Parser: Valid frame parsed. ID=0x{:03X}, DLC={}",
@@ -114,25 +128,38 @@ fn verify_network_and_security() {
                 frame.dlc
             );
             METRIC_FRAMES_RX.fetch_add(1, Ordering::Relaxed);
-            // 2. Cryptographic signature generation
+
+            // 2. Cryptographic signature generation and verification latency measurement
+            let start_crypto = read_cycles();
             let tag = compute_hmac(&frame);
-            defmt::info!("HMAC Sign: Generated tag = {:?}", tag);
-            // 3. Cryptographic signature verification
             let auth = AuthFrame { frame, tag };
-            if verify_frame(&auth) {
+            let verified = verify_frame(&auth);
+            let end_crypto = read_cycles();
+            METRIC_HMAC_VERIFY_CYCLES
+                .store(end_crypto.wrapping_sub(start_crypto), Ordering::Relaxed);
+
+            defmt::info!("HMAC Sign: Generated tag = {:?}", tag);
+            if verified {
                 defmt::info!("HMAC Verify: Signature verification passed.");
             } else {
                 METRIC_HMAC_FAILURES.fetch_add(1, Ordering::Relaxed);
                 defmt::error!("HMAC Verify: Verification failed!");
             }
-            // 4. Queue frame into lock-free ring buffer
+
+            // 3. Queue frame into lock-free ring buffer and measure SPSC queue operations latency
             let mut can_queue = CanRingBuffer::new();
-            if can_queue.push(frame).is_ok() {
+            let start_queue = read_cycles();
+            let push_ok = can_queue.push(frame).is_ok();
+            let popped = if push_ok { can_queue.pop() } else { None };
+            let end_queue = read_cycles();
+            METRIC_CAN_QUEUE_CYCLES.store(end_queue.wrapping_sub(start_queue), Ordering::Relaxed);
+
+            if push_ok {
                 defmt::info!("Ring Buffer: Successfully pushed frame to SPSC queue.");
-                if let Some(popped) = can_queue.pop() {
+                if let Some(p) = popped {
                     defmt::info!(
                         "Ring Buffer: Popped frame from SPSC queue. ID=0x{:03X}",
-                        popped.id
+                        p.id
                     );
                 }
             }
@@ -185,10 +212,46 @@ unsafe fn init_memory_protection() {
 
 /// Task A Entry point
 extern "C" fn task_a() -> ! {
+    use core::sync::atomic::Ordering;
+    use network::{CanFrame, CanRingBuffer};
+    use security::{compute_hmac, verify_frame, AuthFrame};
+
     let mut loop_count = 0u32;
+    let mut can_queue = CanRingBuffer::new();
+
+    // Prepare a template valid frame
+    let mut raw_frame = [0u8; 13];
+    raw_frame[0] = 0x3E; // ID 0x1F0
+    raw_frame[1] = 0x00;
+    raw_frame[2] = 4; // DLC
+    raw_frame[3] = 0xAA;
+    raw_frame[4] = 0xBB;
+    raw_frame[5] = 0xCC;
+    raw_frame[6] = 0xDD;
+    let test_frame = CanFrame::parse(&raw_frame).unwrap();
+
     loop {
-        defmt::info!("Task A is active");
+        defmt::info!("Task A (Stress Test): enqueuing load...");
         loop_count = loop_count.wrapping_add(1);
+
+        // Inject 100 CAN queue and verification operations back-to-back
+        for i in 0..100 {
+            let start = read_cycles();
+            let _ = can_queue.push(test_frame);
+            let popped = can_queue.pop();
+            let end = read_cycles();
+
+            if i == 0 {
+                kernel::metrics::METRIC_CAN_QUEUE_CYCLES
+                    .store(end.wrapping_sub(start), Ordering::Relaxed);
+            }
+
+            if let Some(frame) = popped {
+                let tag = compute_hmac(&frame);
+                let auth = AuthFrame { frame, tag };
+                let _ = verify_frame(&auth);
+            }
+        }
 
         // Periodically dump the metrics dashboard to the host JTAG stream
         if loop_count % 10 == 0 {
