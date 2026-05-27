@@ -1,9 +1,0 @@
-C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os\target\riscv32imac-unknown-none-elf\debug\deps\libcerberus_os-bd6fd757c7f6cb1f.rmeta: src/main.rs
-
-C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os\target\riscv32imac-unknown-none-elf\debug\deps\cerberus_os-bd6fd757c7f6cb1f.d: src/main.rs
-
-src/main.rs:
-
-# env-dep:CARGO_PKG_NAME=cerberus-os
-# env-dep:CARGO_PKG_VERSION=0.1.0
-# env-dep:DEFMT_LOG

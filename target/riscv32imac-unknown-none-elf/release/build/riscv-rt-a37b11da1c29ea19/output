@@ -1,8 +1,0 @@
-cargo:rustc-cfg=riscv
-cargo:rustc-cfg=riscv32
-cargo:rustc-link-search=C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os\target\riscv32imac-unknown-none-elf\release\build\riscv-rt-a37b11da1c29ea19\out
-cargo:rerun-if-changed=link.x
-cargo:rustc-cfg=riscvc
-cargo:rustc-cfg=riscvi
-cargo:rustc-cfg=riscva
-cargo:rustc-cfg=riscvm

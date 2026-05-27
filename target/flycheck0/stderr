@@ -1,5 +1,0 @@
-warning: user-defined alias `check` is ignored, because it is shadowed by a built-in command
-   0.049652300s  INFO prepare_target{force=false package_id=cerberus-os v0.1.0 (C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os) target="cerberus-os"}: cargo::core::compiler::fingerprint: fingerprint dirty for cerberus-os v0.1.0 (C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os)/Check { test: true }/TargetInner { name: "cerberus-os", doc: true, ..: with_path("C:\\Users\\Shaurya\\OneDrive\\Desktop\\projects\\cerberus-os\\src/main.rs", Edition2021) }
-   0.049706100s  INFO prepare_target{force=false package_id=cerberus-os v0.1.0 (C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os) target="cerberus-os"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(Stale)
-    Checking cerberus-os v0.1.0 (C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os)
-error: could not compile `cerberus-os` (bin "cerberus-os" test) due to 1 previous error; 1 warning emitted

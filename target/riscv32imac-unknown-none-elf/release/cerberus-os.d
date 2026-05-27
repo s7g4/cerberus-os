@@ -1,1 +1,0 @@
-C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os\target\riscv32imac-unknown-none-elf\release\cerberus-os: C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os\build.rs C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os\memory.x C:\Users\Shaurya\OneDrive\Desktop\projects\cerberus-os\src\main.rs
