@@ -90,3 +90,15 @@
   - Writing network filter constraints: 15m
 - **Metric Captured**:
   - Verified static assertion of power-of-two buffer sizes.
+
+## Milestone 7 — Cryptographic Frame Authentication
+- **Goal**: Implement zero-allocation truncated HMAC-SHA256 CAN frame signing and constant-time signature verification.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: public dependencies and unused re-exports (`CanError`) triggered dead code warnings on the binary target.
+    - *Fix*: Integrated full match arms in the boot self-test function (`verify_network_and_security`) to process `CanError` variants, executing the complete code path and resolving the warning.
+- **Time Log**:
+  - Serialization and HMAC padding logic: 30m
+  - Constant-time verification algorithm: 25m
+  - Refactoring boot verification tests: 20m
+- **Metric Captured**:
+  - Zero-warning compilation with cryptographic verification fully validated.

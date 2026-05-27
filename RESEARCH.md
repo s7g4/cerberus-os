@@ -106,3 +106,21 @@ $$\text{ID} = (\text{raw}[0] \ll 3) \mathbin{|} (\text{raw}[1] \gg 5)$$
 
 ### Security Filtering at the Network Boundary
 To prevent malicious bus attacks (e.g., diagnostic parameter override commands used in physical vehicle control bypasses), we enforce a blocklist at the packet ingestion boundary. Frames with broadcast diagnostic IDs (`0x7DF`) or specific ECU queries (`0x7E0`–`0x7EF`) are rejected immediately, preventing them from entering the kernel queue.
+
+## 10. Cryptographic Frame Authentication
+
+### Why HMAC-SHA256?
+- **Replay & Spoofing Mitigation**: The CAN bus has no built-in node authentication. Any compromised node can broadcast arbitrary identifiers. Hash-based Message Authentication Codes (HMAC) combine a cryptographic key with the message payload, preventing unauthorized nodes from generating valid signatures.
+- **Why HMAC over Simple Hashing**: HMAC protects against length-extension attacks by hashing the message twice with inner and outer keys:
+  $$\text{HMAC}(K, m) = H((K \oplus \text{opad}) \mathbin{\|} H((K \oplus \text{ipad}) \mathbin{\|} m))$$
+
+### 64-bit Truncation Security Bounds
+To fit within standard CAN payload constraints, we truncate the 256-bit SHA-256 MAC output to the first 8 bytes (64 bits). 
+- According to **NIST SP 800-107r1 §5.2**, truncating to 64 bits offers a collision resistance threshold of $2^{64}$.
+- For a high-bandwidth CAN bus (500 Kbps), attempting a brute-force attack to forge a valid signature would require transmitting millions of frames. This would take years and trigger instant bus faults or network saturation alerts long before a collision could succeed.
+
+### Mitigating Timing Attacks
+In signature verification, standard byte comparisons (like `==` or `memcmp`) exit early upon finding the first mismatched byte. Attackers can measure the execution time of the validation routing to determine how many bytes of their guess matched.
+To prevent this, we use constant-time verification:
+```rust
+expected.iter().zip(actual.iter()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
