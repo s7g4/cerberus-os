@@ -90,3 +90,19 @@ RISC-V Physical Memory Protection is configured using two sets of Control and St
 Naturally Aligned Power of Two (NAPOT) encodes range size $S = 2^K$ and base address $B$ using the following conversion:
 $$\text{pmpaddr} = (B \gg 2) \mathbin{|} ((S / 2 - 1) \gg 2)$$
 This sets all bits below the scale boundary to 1, letting the CPU decoder calculate the size by finding the first 0 bit from the right.
+
+## 9. Controller Area Network (CAN) Protocol
+
+### Standard Frame Layout (ISO 11898-1)
+Standard CAN 2.0A frames use an 11-bit identifier. Transceivers report raw frames in 13-byte packed arrays:
+- **Byte 0**: Identifier Bits [10:3] (MSB).
+- **Byte 1**: Identifier Bits [2:0] (LSB) shifted to the top 3 bits, followed by RTR (Remote Transmission Request) and IDE (Identifier Extension).
+- **Byte 2**: Data Length Code (DLC), indicating payload size (0–8 bytes).
+- **Bytes 3–10**: Payload data.
+
+### Bit-Level Extraction
+The 11-bit standard ID is reconstructed by extracting the MSB and LSB fields:
+$$\text{ID} = (\text{raw}[0] \ll 3) \mathbin{|} (\text{raw}[1] \gg 5)$$
+
+### Security Filtering at the Network Boundary
+To prevent malicious bus attacks (e.g., diagnostic parameter override commands used in physical vehicle control bypasses), we enforce a blocklist at the packet ingestion boundary. Frames with broadcast diagnostic IDs (`0x7DF`) or specific ECU queries (`0x7E0`–`0x7EF`) are rejected immediately, preventing them from entering the kernel queue.

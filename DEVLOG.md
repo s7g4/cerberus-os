@@ -79,3 +79,14 @@
   - Resolving compilation warnings: 5m
 - **Metric Captured**:
   - Linked and compiled cleanly with W^X PMP configurations locked.
+
+## Milestone 6 — CAN Bus Protocol Stack
+- **Goal**: Implement standard CAN frame parsing, lock-free SPSC ring buffers, and network boundary security filters.
+- **What Broke & How it Was Fixed**:
+  - *No breaks*: Built successfully. The index masking trick (`tail & (CAPACITY - 1)`) is statically validated via compile-time assertions.
+- **Time Log**:
+  - Designing raw byte bit-parsing offsets: 20m
+  - Implementing lock-free SPSC buffer logic: 30m
+  - Writing network filter constraints: 15m
+- **Metric Captured**:
+  - Verified static assertion of power-of-two buffer sizes.

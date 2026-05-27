@@ -24,3 +24,7 @@ opt-level = "z"
 debug = true
 lto = true
 codegen-units = 1
+
+[[bin]]
+name = "cerberus-os"
+harness = false

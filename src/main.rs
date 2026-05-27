@@ -9,6 +9,7 @@ use defmt_rtt as _;
 mod scheduler;
 mod trap;
 mod memory;
+mod network;
 
 use scheduler::{BitMapScheduler, TaskControlBlock, TaskState};
 
