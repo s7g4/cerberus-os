@@ -1,0 +1,53 @@
+name: Cerberus-OS CI
+
+on: [push, pull_request]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2024-11-01
+          targets: riscv32imac-unknown-none-elf
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --target riscv32imac-unknown-none-elf -- -D warnings
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2024-11-01
+          targets: riscv32imac-unknown-none-elf
+          components: llvm-tools-preview
+
+      - name: Install cargo-binutils
+        run: cargo install cargo-binutils
+
+      - name: Compile Kernel
+        run: cargo build --release --target riscv32imac-unknown-none-elf
+
+      # Enforce binary size budget (32KB for kernel)
+      - name: Enforce binary size budget
+        run: |
+          SIZE=$(cargo-size --release --target riscv32imac-unknown-none-elf -- -A | grep '\.text' | awk '{print $2}')
+          echo "Binary .text = ${SIZE} bytes"
+          [ "$SIZE" -le "32768" ] || { echo "FAIL: ${SIZE} > 32768"; exit 1; }
+
+      # Verify zero heap allocations
+      - name: Verify zero heap allocations
+        run: |
+          ALLOC=$(cargo-nm --release --target riscv32imac-unknown-none-elf | grep -c '__rust_alloc' || true)
+          echo "Allocator symbols found: $ALLOC"
+          [ "$ALLOC" -eq "0" ] || { echo "FAIL: heap allocator linked in"; exit 1; }
+
+      # Verify zero FPU instructions
+      - name: Verify zero FPU instructions
+        run: |
+          FPU=$(cargo-objdump --release --target riscv32imac-unknown-none-elf -- -d | grep -cE 'fadd|fmul|fdiv|fsub' || true)
+          echo "FPU instructions: $FPU"
+          [ "$FPU" -eq "0" ] || { echo "FAIL: FPU instructions emitted"; exit 1; }

@@ -13,6 +13,12 @@ pub struct BitMapScheduler {
     current_priority: Option<u8>,
 }
 
+impl Default for BitMapScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BitMapScheduler {
     pub const fn new() -> Self {
         Self {
@@ -90,7 +96,9 @@ impl BitMapScheduler {
 
     /// Bootstraps the stack pointer and registers to launch the first task.
     pub fn start_first_task(&mut self) -> ! {
-        let next_prio = self.next_ready_priority().expect("No ready tasks registered");
+        let next_prio = self
+            .next_ready_priority()
+            .expect("No ready tasks registered");
         self.current_priority = Some(next_prio);
         self.mark_blocked(next_prio);
 

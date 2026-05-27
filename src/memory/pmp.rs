@@ -25,11 +25,19 @@ impl PmpConfig {
     /// Convert configuration parameters to a single packed byte.
     pub fn to_byte(self) -> u8 {
         let mut val = 0u8;
-        if self.read { val |= 1 << 0; }
-        if self.write { val |= 1 << 1; }
-        if self.execute { val |= 1 << 2; }
+        if self.read {
+            val |= 1 << 0;
+        }
+        if self.write {
+            val |= 1 << 1;
+        }
+        if self.execute {
+            val |= 1 << 2;
+        }
         val |= (self.mode as u8) << 3;
-        if self.locked { val |= 1 << 7; }
+        if self.locked {
+            val |= 1 << 7;
+        }
         val
     }
 }

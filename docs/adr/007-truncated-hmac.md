@@ -9,7 +9,7 @@ We implement a truncated HMAC-SHA256 scheme. We compute the full HMAC-SHA256 sig
 ## Consequences
 - **Pros**:
   - Signature fits inside standard network frames.
-  - A 64-bit signature provides $2^{64}$ security bounds against random collision and forging attacks, which is highly robust against active embedded vehicle spoofing threats.
+  - A 64-bit signature provides 2^64 security bounds against random collision and forging attacks, which is highly robust against active embedded vehicle spoofing threats.
   - Constant-time verification prevents side-channel timing attacks attempting to brute-force the signature byte-by-byte.
 - **Cons**:
-  - Reduces cryptographic security from 256 bits to 64 bits. However, in low-bandwidth embedded buses (like CAN @ 500Kbps), brute-forcing $2^{64}$ combinations at runtime is mathematically impossible before the keys rotate or the session expires.
+  - Reduces cryptographic security from 256 bits to 64 bits. However, in low-bandwidth embedded buses (like CAN @ 500Kbps), brute-forcing 2^64 combinations at runtime is mathematically impossible before the keys rotate or the session expires.

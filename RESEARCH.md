@@ -63,9 +63,9 @@ Real-time operating systems (RTOS) require deterministic execution times for sch
 
 | Scheduling Queue Structure | Selection Complexity | Insertion Complexity | Deterministic? |
 | :--- | :--- | :--- | :--- |
-| **Unsorted Linked List** | $O(N)$ | $O(1)$ | No (depends on active task count) |
-| **Sorted Linked List** | $O(1)$ | $O(N)$ | No (insertion search varies) |
-| **Bitmap Scheduler (O(1))** | $O(1)$ | $O(1)$ | **Yes (always constant instruction count)** |
+| **Unsorted Linked List** | O(N) | O(1) | No (depends on active task count) |
+| **Sorted Linked List** | O(1) | O(N) | No (insertion search varies) |
+| **Bitmap Scheduler (O(1))** | O(1) | O(1) | **Yes (always constant instruction count)** |
 
 *Citation: Buttazzo, G. (2011). Hard Real-Time Computing Systems. Springer. §4.2.*
 
@@ -87,8 +87,10 @@ RISC-V Physical Memory Protection is configured using two sets of Control and St
 2. **`pmpaddrN`**: Address registers. In NAPOT mode, the register holds the base address and range size encoded in a single register.
 
 ### NAPOT Encoding Formula
-Naturally Aligned Power of Two (NAPOT) encodes range size $S = 2^K$ and base address $B$ using the following conversion:
-$$\text{pmpaddr} = (B \gg 2) \mathbin{|} ((S / 2 - 1) \gg 2)$$
+Naturally Aligned Power of Two (NAPOT) encodes range size `S` = 2^K and base address `B` using the following conversion:
+```ld
+pmpaddr = (B >> 2) | ((S / 2 - 1) >> 2)
+```
 This sets all bits below the scale boundary to 1, letting the CPU decoder calculate the size by finding the first 0 bit from the right.
 
 ## 9. Controller Area Network (CAN) Protocol
@@ -102,7 +104,9 @@ Standard CAN 2.0A frames use an 11-bit identifier. Transceivers report raw frame
 
 ### Bit-Level Extraction
 The 11-bit standard ID is reconstructed by extracting the MSB and LSB fields:
-$$\text{ID} = (\text{raw}[0] \ll 3) \mathbin{|} (\text{raw}[1] \gg 5)$$
+```ld
+ID = (raw[0] << 3) | (raw[1] >> 5)
+```
 
 ### Security Filtering at the Network Boundary
 To prevent malicious bus attacks (e.g., diagnostic parameter override commands used in physical vehicle control bypasses), we enforce a blocklist at the packet ingestion boundary. Frames with broadcast diagnostic IDs (`0x7DF`) or specific ECU queries (`0x7E0`–`0x7EF`) are rejected immediately, preventing them from entering the kernel queue.
@@ -112,11 +116,14 @@ To prevent malicious bus attacks (e.g., diagnostic parameter override commands u
 ### Why HMAC-SHA256?
 - **Replay & Spoofing Mitigation**: The CAN bus has no built-in node authentication. Any compromised node can broadcast arbitrary identifiers. Hash-based Message Authentication Codes (HMAC) combine a cryptographic key with the message payload, preventing unauthorized nodes from generating valid signatures.
 - **Why HMAC over Simple Hashing**: HMAC protects against length-extension attacks by hashing the message twice with inner and outer keys:
-  $$\text{HMAC}(K, m) = H((K \oplus \text{opad}) \mathbin{\|} H((K \oplus \text{ipad}) \mathbin{\|} m))$$
+
+```ld
+HMAC(K, m) = H((K ^ opad) || H((K ^ ipad) || m))
+```
 
 ### 64-bit Truncation Security Bounds
 To fit within standard CAN payload constraints, we truncate the 256-bit SHA-256 MAC output to the first 8 bytes (64 bits). 
-- According to **NIST SP 800-107r1 §5.2**, truncating to 64 bits offers a collision resistance threshold of $2^{64}$.
+- According to **NIST SP 800-107r1 §5.2**, truncating to 64 bits offers a collision resistance threshold of 2^64.
 - For a high-bandwidth CAN bus (500 Kbps), attempting a brute-force attack to forge a valid signature would require transmitting millions of frames. This would take years and trigger instant bus faults or network saturation alerts long before a collision could succeed.
 
 ### Mitigating Timing Attacks
@@ -124,8 +131,9 @@ In signature verification, standard byte comparisons (like `==` or `memcmp`) exi
 To prevent this, we use constant-time verification:
 ```rust
 expected.iter().zip(actual.iter()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+```
 
-## 10. Real-Time Telemetry and Atomic Performance
+## 11. Real-Time Telemetry and Atomic Performance
 
 ### Non-Intrusive JTAG RTT DMA
 - **Mechanism**: Real-Time Transfer (RTT) uses the debug probe's ability to read and write the target's RAM asynchronously via JTAG/SWD Direct Memory Access (DMA) buses.
@@ -134,3 +142,10 @@ expected.iter().zip(actual.iter()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
 ### Atomic Operations vs. Critical Sections
 - **Atomic Operations**: Using atomic variables (`AtomicU32` with `Ordering::Relaxed`) compiles down to RISC-V hardware atomic instructions (like `amoadd.w`). These complete in 1 CPU cycle.
 - **Comparison**: Disabling interrupts globally (via critical sections) to increment a normal integer is expensive (takes 10-15 cycles to read, modify, and restore the CSRs) and increases interrupt latency. Atomic instructions eliminate lock contention safely with zero interrupt latency impact.
+
+## 12. CI/CD Static Analysis Gates
+### Enforcing Zero Heap Allocations
+To guarantee that the compiled binary does not link a heap allocator (complying with real-time requirements), we analyze the compiled ELF symbol table. The Rust compiler redirects heap allocations to `__rust_alloc` and `__rust_dealloc`. By running `cargo-nm` and searching for these symbols, we statically verify that no dynamic memory dependencies are compiled into the image.
+
+### Enforcing Zero Floating-Point Unit (FPU) Usage
+Floating-point calculations (single or double precision) require save/restore context overhead on context switches. In microcontrollers running without an FPU or where context switches must remain under 50 cycles, we must ensure the compiler only emits integer instructions. By running `cargo-objdump` and searching for floating-point opcodes (`fadd`, `fmul`, `fdiv`, `fsub`), we statically verify that the compiler has not emitted FPU instructions.

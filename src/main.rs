@@ -6,12 +6,12 @@
 
 use defmt_rtt as _;
 
-mod scheduler;
-mod trap;
+mod kernel;
 mod memory;
 mod network;
+mod scheduler;
 mod security;
-mod kernel;
+mod trap;
 
 use scheduler::{BitMapScheduler, TaskControlBlock, TaskState};
 
@@ -51,8 +51,10 @@ pub fn kmain() -> ! {
         verify_network_and_security();
 
         // Initialize task contexts on their respective stacks
-        let sp_a = TaskControlBlock::initialize_stack(&mut *core::ptr::addr_of_mut!(TASK_A_STACK), task_a);
-        let sp_b = TaskControlBlock::initialize_stack(&mut *core::ptr::addr_of_mut!(TASK_B_STACK), task_b);
+        let sp_a =
+            TaskControlBlock::initialize_stack(&mut *core::ptr::addr_of_mut!(TASK_A_STACK), task_a);
+        let sp_b =
+            TaskControlBlock::initialize_stack(&mut *core::ptr::addr_of_mut!(TASK_B_STACK), task_b);
 
         let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
 
@@ -83,10 +85,10 @@ pub fn kmain() -> ! {
 
 /// Verification routine to test the CAN parser, ring buffer, and HMAC authentication on boot.
 fn verify_network_and_security() {
+    use core::sync::atomic::Ordering;
+    use kernel::metrics::{METRIC_FRAMES_DROPPED, METRIC_FRAMES_RX, METRIC_HMAC_FAILURES};
     use network::{CanError, CanFrame, CanRingBuffer};
     use security::{compute_hmac, verify_frame, AuthFrame};
-    use kernel::metrics::{METRIC_FRAMES_RX, METRIC_FRAMES_DROPPED, METRIC_HMAC_FAILURES};
-    use core::sync::atomic::Ordering;
 
     defmt::info!("Executing network & cryptographic self-test...");
 
@@ -106,7 +108,11 @@ fn verify_network_and_security() {
     // Parse raw buffer
     match CanFrame::parse(&raw_frame) {
         Ok(frame) => {
-            defmt::info!("CAN Parser: Valid frame parsed. ID=0x{:03X}, DLC={}", frame.id, frame.dlc);
+            defmt::info!(
+                "CAN Parser: Valid frame parsed. ID=0x{:03X}, DLC={}",
+                frame.id,
+                frame.dlc
+            );
             METRIC_FRAMES_RX.fetch_add(1, Ordering::Relaxed);
             // 2. Cryptographic signature generation
             let tag = compute_hmac(&frame);
@@ -124,7 +130,10 @@ fn verify_network_and_security() {
             if can_queue.push(frame).is_ok() {
                 defmt::info!("Ring Buffer: Successfully pushed frame to SPSC queue.");
                 if let Some(popped) = can_queue.pop() {
-                    defmt::info!("Ring Buffer: Popped frame from SPSC queue. ID=0x{:03X}", popped.id);
+                    defmt::info!(
+                        "Ring Buffer: Popped frame from SPSC queue. ID=0x{:03X}",
+                        popped.id
+                    );
                 }
             }
         }
@@ -206,7 +215,7 @@ extern "C" fn task_b() -> ! {
 
 /// Configure the Machine-mode Timer.
 unsafe fn init_timer() {
-    let clint_mtime    = 0x0200_BFF8 as *const u64;
+    let clint_mtime = 0x0200_BFF8 as *const u64;
     let clint_mtimecmp = 0x0200_4000 as *mut u64;
     clint_mtimecmp.write_volatile(clint_mtime.read_volatile() + 40_000);
 

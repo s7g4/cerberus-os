@@ -114,3 +114,18 @@
   - Integrating exception tracking for PMP access faults: 15m
 - **Metric Captured**:
   - Built cleanly with telemetry active and verified.
+
+## Milestone 9 — CI/CD & Portfolio Documentation
+- **Goal**: Establish automated GitHub Actions CI/CD gates and package complete architectural and packaging documentation.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: Markdown files had LaTeX math dollar formatting which fails to preview nicely in standard Markdown environments.
+    - *Fix*: Refactored all LaTeX math blocks to standard plain-text equivalents.
+  - *Issue 2*: Quality gate clippy execution failed on default implementation requirements and needless borrows.
+    - *Fix*: Implemented `Default` for `BitMapScheduler` and resolved needless reference borrows in HMAC hashing execution.
+- **Time Log**:
+  - Creating GitHub CI workflow: 20m
+  - Writing Technical Architecture Spec: 45m
+  - Fixing Markdown preview formats: 15m
+  - Resolving Clippy and formatting errors: 25m
+- **Metric Captured**:
+  - Automated CI check verified. Local formatting and clippy checks pass cleanly.

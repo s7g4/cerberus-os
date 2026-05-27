@@ -10,6 +10,6 @@ We implement a lock-free Single-Producer Single-Consumer (SPSC) Ring Buffer. The
 - **Pros**:
   - Lock-free synchronization. No critical sections, locks, or interrupt disabling are needed to push or pop.
   - Zero heap allocation.
-  - $O(1)$ push and pop times, with index updates executing in a single CPU cycle via bitwise masking.
+  - O(1) push and pop times, with index updates executing in a single CPU cycle via bitwise masking.
 - **Cons**:
   - Strictly limited to a single producer and single consumer. If multiple tasks attempt to read from the buffer, software lock coordination would be required.
