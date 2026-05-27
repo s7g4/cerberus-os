@@ -8,6 +8,7 @@ use defmt_rtt as _;
 
 mod scheduler;
 mod trap;
+mod memory;
 
 use scheduler::{BitMapScheduler, TaskControlBlock, TaskState};
 
@@ -40,6 +41,9 @@ pub fn kmain() -> ! {
         let trap_addr = _trap_entry as usize;
         core::arch::asm!("csrw mtvec, {}", in(reg) trap_addr);
 
+        // Initialize PMP boundaries (W^X rules)
+        init_memory_protection();
+
         // Initialize task contexts on their respective stacks
         let sp_a = TaskControlBlock::initialize_stack(&mut *core::ptr::addr_of_mut!(TASK_A_STACK), task_a);
         let sp_b = TaskControlBlock::initialize_stack(&mut *core::ptr::addr_of_mut!(TASK_B_STACK), task_b);
@@ -69,6 +73,39 @@ pub fn kmain() -> ! {
         // Start execution of the highest priority task
         sched.start_first_task();
     }
+}
+
+/// Configures hardware-level memory boundaries.
+unsafe fn init_memory_protection() {
+    use memory::{configure_pmp, PmpAddressMode, PmpConfig};
+    // Region 0: Flash/Code execution boundary (Read + Execute only, Locked)
+    // Base: 0x4200_0000, Size: 4MB (using NAPOT address mode)
+    configure_pmp(
+        0,
+        0x4200_0000,
+        4 * 1024 * 1024,
+        PmpConfig {
+            read: true,
+            write: false,
+            execute: true,
+            mode: PmpAddressMode::Napot,
+            locked: true,
+        },
+    );
+    // Region 1: SRAM/Data RAM boundary (Read + Write only, Locked - Prevents execution from RAM)
+    // Base: 0x3FC8_0000, Size: 512KB
+    configure_pmp(
+        1,
+        0x3FC8_0000,
+        512 * 1024,
+        PmpConfig {
+            read: true,
+            write: true,
+            execute: false,
+            mode: PmpAddressMode::Napot,
+            locked: true,
+        },
+    );
 }
 
 /// Task A Entry point

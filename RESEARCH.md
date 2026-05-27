@@ -73,3 +73,20 @@ Real-time operating systems (RTOS) require deterministic execution times for sch
 - **Mechanism**: We represent the ready queue as a single 32-bit bitmask (`ready_bitmap: u32`), where bit `N` represents task priority `N`. Finding the highest priority ready task is mathematically equivalent to finding the lowest set bit index (trailing zeros).
 - **RISC-V Implementation**: Rust's `trailing_zeros()` maps directly to the RISC-V **`ctz`** (Count Trailing Zeros) hardware instruction. 
 - **Performance**: On RV32IMC processors, this resolves to a single CPU cycle. It guarantees that the time taken to select the next task remains exactly the same whether 1 task is ready or 32 tasks are ready.
+
+## 8. Physical Memory Protection (PMP)
+
+### CSR Configurations
+RISC-V Physical Memory Protection is configured using two sets of Control and Status Registers (CSRs):
+1. **`pmpcfgN`**: 8-bit configuration registers packed into 32-bit registers (e.g., `pmpcfg0` covers entries 0–3). Each byte contains:
+   - `R` (Bit 0): Read permission.
+   - `W` (Bit 1): Write permission.
+   - `X` (Bit 2): Execute permission.
+   - `A` (Bits 3–4): Address matching mode (00: Disabled, 01: TOR, 10: NA4, 11: NAPOT).
+   - `L` (Bit 7): Lock bit. When set, PMP rules apply to Machine mode (M-mode) and cannot be cleared until hardware reset.
+2. **`pmpaddrN`**: Address registers. In NAPOT mode, the register holds the base address and range size encoded in a single register.
+
+### NAPOT Encoding Formula
+Naturally Aligned Power of Two (NAPOT) encodes range size $S = 2^K$ and base address $B$ using the following conversion:
+$$\text{pmpaddr} = (B \gg 2) \mathbin{|} ((S / 2 - 1) \gg 2)$$
+This sets all bits below the scale boundary to 1, letting the CPU decoder calculate the size by finding the first 0 bit from the right.

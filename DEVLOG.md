@@ -68,3 +68,14 @@
 - **Metric Captured**:
   - Built successfully with zero compiler warnings.
 
+## Milestone 5 — Hardware PMP Memory Protection
+- **Goal**: Configure physical memory protection limits to enforce W^X safety boundaries.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: Dead code warnings for unused `PmpAddressMode` variants.
+    - *Fix*: Added `#[allow(dead_code)]` above the enum since it represents a complete target hardware configuration API.
+- **Time Log**:
+  - Researching PMP and NAPOT configurations: 25m
+  - Writing PMP registers configuration drivers: 30m
+  - Resolving compilation warnings: 5m
+- **Metric Captured**:
+  - Linked and compiled cleanly with W^X PMP configurations locked.
