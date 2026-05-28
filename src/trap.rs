@@ -8,6 +8,10 @@ pub static TICK_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Measured clock cycle count overhead for entry context preservation.
 pub static METRIC_TRAP_LATENCY_CYCLES: AtomicU32 = AtomicU32::new(0);
 
+/// Array tracking the tick count of the last checkin for each task.
+#[no_mangle]
+pub static mut LAST_CHECKIN_TICK: [u32; 32] = [0; 32];
+
 /// Core trap dispatcher called from assembly when an exception or interrupt occurs.
 ///
 /// Returns the stack pointer of the next task to run.
@@ -43,6 +47,19 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                 static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
             }
             let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+
+            // Scan and wake tasks blocked on ticks
+            for i in 0..crate::scheduler::bitmap::MAX_TASKS {
+                if let Some(tcb) = &mut sched.task_table[i] {
+                    if let crate::scheduler::TaskState::Blocked { wake_tick } = tcb.state {
+                        if tick >= wake_tick {
+                            tcb.state = crate::scheduler::TaskState::Ready;
+                            sched.ready_bitmap |= 1 << tcb.active_priority;
+                        }
+                    }
+                }
+            }
+
             if let Some((old_sp_ptr, new_sp)) = sched.schedule() {
                 // Save the stack pointer of the outgoing task
                 old_sp_ptr.write_volatile(current_sp);
@@ -77,6 +94,33 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                         old_sp_ptr.write_volatile(current_sp);
                         current_sp = new_sp;
 
+                        if let Some(prio) = sched.current_priority {
+                            if let Some(new_tcb) = &sched.task_table[prio as usize] {
+                                crate::memory::reprogram_pmp_stack(new_tcb.name);
+                            }
+                        }
+                    }
+                }
+                2 => {
+                    // Syscall 2: Sleep Ticks
+                    let ticks = frame.add(6).read_volatile(); // a0 is index 6 (offset 24)
+                    extern "Rust" {
+                        static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
+                    }
+                    let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+                    let running_idx = sched.current_priority.unwrap() as usize;
+
+                    let current_tick = TICK_COUNT.load(Ordering::Relaxed);
+                    let tcb = sched.task_table[running_idx].as_mut().unwrap();
+                    tcb.state = crate::scheduler::TaskState::Blocked {
+                        wake_tick: current_tick + ticks as u32,
+                    };
+                    sched.ready_bitmap &= !(1 << tcb.active_priority);
+
+                    // Reschedule because the current task is now blocked
+                    if let Some((old_sp_ptr, new_sp)) = sched.schedule() {
+                        old_sp_ptr.write_volatile(current_sp);
+                        current_sp = new_sp;
                         if let Some(prio) = sched.current_priority {
                             if let Some(new_tcb) = &sched.task_table[prio as usize] {
                                 crate::memory::reprogram_pmp_stack(new_tcb.name);
@@ -223,6 +267,17 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                 }
                             }
                         }
+                    }
+                }
+                5 => {
+                    // Syscall 5: Watchdog Check-in
+                    extern "Rust" {
+                        static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
+                    }
+                    let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+                    if let Some(running_idx) = sched.current_priority {
+                        let current_tick = TICK_COUNT.load(Ordering::Relaxed);
+                        LAST_CHECKIN_TICK[running_idx as usize] = current_tick;
                     }
                 }
                 _ => {

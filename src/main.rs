@@ -30,6 +30,7 @@ pub static mut SCHEDULER: BitMapScheduler = BitMapScheduler::new();
 pub static mut TASK_A_STACK: [u8; 1024] = [0; 1024];
 pub static mut TASK_B_STACK: [u8; 1024] = [0; 1024];
 pub static mut TASK_C_STACK: [u8; 1024] = [0; 1024];
+pub static mut TASK_WD_STACK: [u8; 1024] = [0; 1024];
 
 // Dedicated Kernel Interrupt Stack (M-mode execution)
 pub static mut KERNEL_STACK: [u8; 1024] = [0; 1024];
@@ -79,6 +80,10 @@ pub fn kmain() -> ! {
         verify_network_and_security();
 
         // Initialize task contexts on their respective stacks
+        let sp_wd = TaskControlBlock::initialize_stack(
+            &mut *core::ptr::addr_of_mut!(TASK_WD_STACK),
+            watchdog_task,
+        );
         let sp_a =
             TaskControlBlock::initialize_stack(&mut *core::ptr::addr_of_mut!(TASK_A_STACK), task_a);
         let sp_b =
@@ -89,6 +94,14 @@ pub fn kmain() -> ! {
         let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
 
         // Register tasks inside the scheduler
+        sched.register_task(TaskControlBlock {
+            saved_sp: sp_wd,
+            priority: 0, // Watchdog has highest priority
+            active_priority: 0,
+            state: TaskState::Ready,
+            name: "Watchdog",
+        });
+
         sched.register_task(TaskControlBlock {
             saved_sp: sp_a,
             priority: 1, // High priority
@@ -254,6 +267,20 @@ unsafe fn init_memory_protection() {
         },
     );
 
+    // Entry 4: Inactive Stack 3 (No Access, Unlocked)
+    configure_pmp(
+        4,
+        core::ptr::addr_of!(TASK_WD_STACK) as usize,
+        1024,
+        PmpConfig {
+            read: false,
+            write: false,
+            execute: false,
+            mode: PmpAddressMode::Napot,
+            locked: false,
+        },
+    );
+
     // Entry 3: SRAM/Data RAM boundary (Read + Write only, Unlocked)
     configure_pmp(
         3,
@@ -286,6 +313,18 @@ fn yield_now() {
     }
 }
 
+/// Syscall wrapper to sleep for a specific number of ticks.
+fn sleep_ticks(ticks: usize) {
+    unsafe {
+        core::arch::asm!(
+            "li a7, 2",
+            "mv a0, {}",
+            "ecall",
+            in(reg) ticks
+        );
+    }
+}
+
 /// Syscall wrapper to lock a Mutex.
 fn lock_mutex(idx: usize) {
     unsafe {
@@ -310,11 +349,102 @@ fn unlock_mutex(idx: usize) {
     }
 }
 
+/// Syscall wrapper to check in with the Watchdog.
+fn watchdog_checkin() {
+    unsafe {
+        core::arch::asm!("li a7, 5", "ecall");
+    }
+}
+
+/// Dedicated Watchdog Task (Highest Priority, Priority 0)
+extern "C" fn watchdog_task() -> ! {
+    defmt::info!("Watchdog Task (Priority 0) started.");
+
+    // Initialize check-in ticks to the current system tick to avoid false positives at boot
+    let current_tick = crate::trap::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+    unsafe {
+        let last_checkins = &mut *core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK);
+        last_checkins[1] = current_tick; // Task A
+        last_checkins[2] = current_tick; // Task B
+    }
+
+    let mut loop_count = 0u32;
+
+    loop {
+        // Sleep for 100 ticks
+        sleep_ticks(100);
+
+        let current_tick = crate::trap::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+
+        // Check health of monitored ready/running tasks
+        extern "Rust" {
+            static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
+        }
+        let sched = unsafe { &mut *core::ptr::addr_of_mut!(SCHEDULER) };
+
+        let mut check_failed = false;
+        let mut failed_task = "";
+
+        // Check Task A (prio 1)
+        if let Some(tcb) = &sched.task_table[1] {
+            if tcb.state != TaskState::Terminated {
+                let last_checkin =
+                    unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[1] };
+                let elapsed = current_tick.wrapping_sub(last_checkin);
+                if elapsed > 200 {
+                    check_failed = true;
+                    failed_task = tcb.name;
+                }
+            }
+        }
+
+        // Check Task B (prio 2)
+        if let Some(tcb) = &sched.task_table[2] {
+            if tcb.state != TaskState::Terminated {
+                let last_checkin =
+                    unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[2] };
+                let elapsed = current_tick.wrapping_sub(last_checkin);
+                if elapsed > 200 {
+                    check_failed = true;
+                    failed_task = tcb.name;
+                }
+            }
+        }
+
+        if check_failed {
+            defmt::error!(
+                "WATCHDOG FAILURE: Task '{}' failed to check in! (Current Tick: {}, Last Check-in: {})",
+                failed_task,
+                current_tick,
+                unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[if failed_task == "Task A" { 1 } else { 2 }] }
+            );
+
+            // Print final telemetry dashboard
+            crate::kernel::dump_metrics();
+
+            defmt::error!("Safe-parking CPU. Disabling interrupts.");
+            unsafe {
+                // Disable interrupts (clear MIE bit in mstatus)
+                core::arch::asm!("csrci mstatus, 8");
+                loop {
+                    core::arch::asm!("wfi");
+                }
+            }
+        }
+
+        loop_count = loop_count.wrapping_add(1);
+        if loop_count % 5 == 0 {
+            defmt::info!("Watchdog: All active monitored tasks are healthy.");
+        }
+    }
+}
+
 /// Task A Entry point (High Priority)
 extern "C" fn task_a() -> ! {
     let mut loop_count = 0u32;
     loop {
         defmt::info!("Task A (High) loop starting. Trying to lock Mutex 0...");
+        watchdog_checkin();
         lock_mutex(0);
         defmt::info!("Task A (High) locked Mutex 0 successfully.");
 
@@ -338,13 +468,24 @@ extern "C" fn task_a() -> ! {
 
 /// Task B Entry point (Medium Priority)
 extern "C" fn task_b() -> ! {
+    let mut loops = 0u32;
     loop {
         defmt::info!("Task B (Medium) is active. Running heavy loop...");
+
+        // Simulating a hang after 5 successful loops
+        if loops < 5 {
+            watchdog_checkin();
+        } else {
+            defmt::warn!("Task B (Medium) simulating software hang: stopping check-ins!");
+        }
+
         // Large compute loop. Without PIP, this would starve Task C and block Task A forever.
         for _ in 0..80_000 {
             unsafe { core::arch::asm!("nop") };
         }
+
         defmt::info!("Task B (Medium) yielding.");
+        loops = loops.wrapping_add(1);
         yield_now();
     }
 }

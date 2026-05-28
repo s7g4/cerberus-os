@@ -222,3 +222,22 @@ In a high-integrity partitioned microkernel, we enforce **containment**:
 - It changes the task's state in the TCB to `Terminated` and clears its ready bit in the scheduling ready mask.
 - It reschedules, switching the CPU context to a healthy ready task.
 This keeps critical services running (high availability) even if a non-critical component (such as logging or third-party telemetry) crashes.
+
+## 17. AUTOSAR-Style Logical Watchdog Thread Monitoring
+
+### Watchdog Manager (WdgM) Principles
+In automotive software engineering (such as AUTOSAR classic), the Watchdog Manager (WdgM) is a basic software module that supervises the execution of safety-related software. It provides:
+1. **Control Flow Supervision (Logical Supervision)**: Verifies that the program code is executed in the correct order.
+2. **Temporal Supervision**: Verifies that tasks execute within their expected timing bounds (i.e. not too fast, not too slow, and check in before a deadline).
+
+In Cerberus-OS, we implement temporal supervision using a thread-granular check-in register array (`LAST_CHECKIN_TICK`) and a dedicated monitor task.
+
+### Sleeping and Tick Blocks
+To enable the watchdog task to run periodically, we implemented a sleep queue mechanism:
+1. A task invokes `sleep_ticks(ticks)` (Syscall 2).
+2. The kernel sets the task's state to `Blocked { wake_tick: current_tick + ticks }` and clears its ready bit in the scheduling bitmap.
+3. On every timer interrupt, the kernel scans the task table and checks if the current `TICK_COUNT` is greater than or equal to the task's `wake_tick`. If so, the task is set back to `Ready` and its bit in the ready bitmap is restored.
+This avoids busy-waiting, preserving CPU cycles for lower-priority application tasks.
+
+### Watchdog Preemption Guarantees
+Running the Watchdog Task at Priority 0 (the highest priority) ensures that the watchdog is guaranteed to execute when its sleep interval expires, regardless of which application tasks are running. Even if a medium-priority task (Task B) gets stuck in an infinite loop without yielding, the hardware timer interrupt will preempt Task B, wake up the Watchdog Task, and because the Watchdog Task has a higher priority (0 > 2), the scheduler will execute the Watchdog Task immediately, allowing it to detect the hang and safe-park the system.

@@ -169,3 +169,60 @@
   - Implementing PIP demonstration tasks (Task A, B, C): 35m
 - **Metric Captured**:
   - Priority inheritance verified. Telemetry logs confirm Task C's priority was temporarily boosted from 3 to 1 to bypass Task B and unblock Task A.
+
+## Milestone 13 — Task Fault Isolation & Exception Recovery
+- **Goal**: Implement synchronous exception recovery, terminating faulty tasks in M-Mode without panicking the kernel, and test using fault injection.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: Redundant `unsafe` wrapper around `core::ptr::addr_of!` triggered clippy warnings.
+    - *Fix*: Removed `unsafe` block from `addr_of!` call in Task C.
+  - *Issue 2*: Clippy flagged an infinite inner loop inside an outer task loop as `never_loop`.
+    - *Fix*: Removed the redundant outer `loop` in Task C since it is terminated by the kernel on fault injection.
+- **Time Log**:
+  - Implementing exception interceptors in trap handler: 30m
+  - Writing fault-injection routine in Task C: 20m
+  - Adjusting task stack mapping in PMP priority masking: 25m
+- **Metric Captured**:
+  - Fault isolation verified. When Task C attempted an unauthorized read of Task A's stack, the CPU triggered a Load Access Fault exception. The kernel caught the exception, terminated Task C, and maintained Task A and Task B execution without interruption.
+
+## Milestone 14 — AUTOSAR-Style Logical Watchdog Thread Monitor
+- **Goal**: Build a thread-level health monitor to prevent silent thread freezes and safe-park the CPU upon detection.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: Unnecessary `unsafe` block around `TICK_COUNT.load` inside `watchdog_task` triggered clippy warnings.
+    - *Fix*: Removed the unnecessary `unsafe` block since loading atomic variables is safe in Rust.
+- **Time Log**:
+  - Implementing `sleep_ticks` and `watchdog_checkin` syscall handlers: 45m
+  - Adding sleep wake-up scan in timer interrupt: 30m
+  - Writing the Watchdog Monitor Task and simulated hang in Task B: 40m
+  - Extending PMP configuration driver and reprogramming for 4 tasks: 35m
+  - Verifying build and testing simulated hang: 25m
+- **Metric Captured**:
+  - Watchdog Thread Monitoring successfully verified. RTT logs confirm that the Watchdog Task monitored Task A and Task B health, and upon Task B's simulated hang (stopped checking in after 5 loops), the Watchdog successfully detected the timeout, dumped the metrics dashboard, and safe-parked the CPU in an infinite `wfi` loop.
+
+
+## Milestone 13 — Task Fault Isolation & Exception Recovery
+- **Goal**: Implement synchronous exception recovery, terminating faulty tasks in M-Mode without panicking the kernel, and test using fault injection.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: Redundant `unsafe` wrapper around `core::ptr::addr_of!` triggered clippy warnings.
+    - *Fix*: Removed `unsafe` block from `addr_of!` call in Task C.
+  - *Issue 2*: Clippy flagged an infinite inner loop inside an outer task loop as `never_loop`.
+    - *Fix*: Removed the redundant outer `loop` in Task C since it is terminated by the kernel on fault injection.
+- **Time Log**:
+  - Implementing exception interceptors in trap handler: 30m
+  - Writing fault-injection routine in Task C: 20m
+  - Adjusting task stack mapping in PMP priority masking: 25m
+- **Metric Captured**:
+  - Fault isolation verified. When Task C attempted an unauthorized read of Task A's stack, the CPU triggered a Load Access Fault exception. The kernel caught the exception, terminated Task C, and maintained Task A and Task B execution without interruption.
+
+## Milestone 14 — AUTOSAR-Style Logical Watchdog Thread Monitor
+- **Goal**: Build a thread-level health monitor to prevent silent thread freezes and safe-park the CPU upon detection.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: Unnecessary `unsafe` block around `TICK_COUNT.load` inside `watchdog_task` triggered clippy warnings.
+    - *Fix*: Removed the unnecessary `unsafe` block since loading atomic variables is safe in Rust.
+- **Time Log**:
+  - Implementing `sleep_ticks` and `watchdog_checkin` syscall handlers: 45m
+  - Adding sleep wake-up scan in timer interrupt: 30m
+  - Writing the Watchdog Monitor Task and simulated hang in Task B: 40m
+  - Extending PMP configuration driver and reprogramming for 4 tasks: 35m
+  - Verifying build and testing simulated hang: 25m
+- **Metric Captured**:
+  - Watchdog Thread Monitoring successfully verified. RTT logs confirm that the Watchdog Task monitored Task A and Task B health, and upon Task B's simulated hang (stopped checking in after 5 loops), the Watchdog successfully detected the timeout, dumped the metrics dashboard, and safe-parked the CPU in an infinite `wfi` loop.
