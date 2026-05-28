@@ -349,19 +349,28 @@ extern "C" fn task_b() -> ! {
     }
 }
 
-/// Task C Entry point (Low Priority)
+/// Task C Entry point (Low Priority & Fault Injection target)
 extern "C" fn task_c() -> ! {
+    defmt::info!("Task C (Low) starting. Locking Mutex 0...");
+    lock_mutex(0);
+    defmt::info!("Task C (Low) acquired Mutex 0. Yielding...");
+    yield_now(); // Yield to let Task A preempt us and block on Mutex 0
+
+    defmt::info!("Task C (Low) resumed. Releasing Mutex 0...");
+    unlock_mutex(0);
+    defmt::info!("Task C (Low) released Mutex 0. Yielding...");
+    yield_now();
+
+    // --- FAULT INJECTION ---
+    defmt::info!("Task C (Low) injecting fault: attempting illegal read of Task A's stack...");
+
+    // This read should instantly trigger a PMP Load Access Fault (cause 5)
+    let illegal_ptr = core::ptr::addr_of!(TASK_A_STACK) as *const u8;
+    let _val = unsafe { illegal_ptr.read_volatile() };
+
+    // We should never reach this line because the kernel terminates the task
+    defmt::error!("Task C (Low) failed to isolate! Accessed forbidden memory.");
     loop {
-        defmt::info!("Task C (Low) starting. Locking Mutex 0...");
-        lock_mutex(0);
-        defmt::info!("Task C (Low) acquired Mutex 0. Yielding to let high priority run...");
-
-        yield_now(); // Yield to let Task A preempt us and block on Mutex 0
-
-        defmt::info!("Task C (Low) resumed. Releasing Mutex 0...");
-        unlock_mutex(0);
-        defmt::info!("Task C (Low) released Mutex 0. Yielding.");
-
         yield_now();
     }
 }

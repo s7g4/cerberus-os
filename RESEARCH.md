@@ -208,3 +208,17 @@ To prevent priority boosts from degrading our O(1) scheduler complexity into an 
 ```rust
 pub priority_to_task: [Option<u8>; MAX_TASKS]
 ```
+
+## 16. Hardware Exception Trapping & Task Fault Recovery
+### Synchronous Exception Trapping
+RISC-V hardware separates traps into asynchronous interrupts (e.g., timer interrupts) and synchronous exceptions (e.g., memory access violations, illegal instructions). When a U-Mode task attempts to execute a prohibited operation:
+1. The hardware traps to M-Mode immediately, saving the fault-instigating PC to `mepc` and setting `mcause` to the exception code.
+2. The memory boundary triggers a **Load Access Fault** (`mcause = 5`), a **Store Access Fault** (`mcause = 7`), or an **Instruction Access Fault** (`mcause = 1`).
+### Task Containment vs. Global Kernel Panics
+In basic or monolithic kernels, a memory violation inside an application triggers a global kernel panic, halting all system services. 
+In a high-integrity partitioned microkernel, we enforce **containment**:
+- The kernel trap handler intercepts the exception.
+- It queries the active task index from the scheduler.
+- It changes the task's state in the TCB to `Terminated` and clears its ready bit in the scheduling ready mask.
+- It reschedules, switching the CPU context to a healthy ready task.
+This keeps critical services running (high availability) even if a non-critical component (such as logging or third-party telemetry) crashes.

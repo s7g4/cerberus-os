@@ -233,12 +233,40 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
         cause => {
             if cause == 1 || cause == 5 || cause == 7 {
                 crate::kernel::metrics::METRIC_PMP_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+
+                // Identify and terminate the faulty U-mode task
+                extern "Rust" {
+                    static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
+                }
+                let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+                let running_idx = sched.current_priority.unwrap() as usize;
+
+                if let Some(tcb) = &mut sched.task_table[running_idx] {
+                    defmt::error!(
+                        "SECURITY FAULT: Task '{}' triggered memory access violation (cause: {}). Terminating task.",
+                        tcb.name,
+                        cause
+                    );
+                    tcb.state = crate::scheduler::TaskState::Terminated;
+                }
+
+                // Reschedule to run a healthy task
+                if let Some((old_sp_ptr, new_sp)) = sched.schedule() {
+                    old_sp_ptr.write_volatile(current_sp);
+                    current_sp = new_sp;
+                    if let Some(prio) = sched.current_priority {
+                        if let Some(new_tcb) = &sched.task_table[prio as usize] {
+                            crate::memory::reprogram_pmp_stack(new_tcb.name);
+                        }
+                    }
+                }
+            } else {
+                defmt::error!("Unhandled exception. Cause register: 0x{:08X}", cause);
+                let frame = current_sp as *const usize;
+                let mepc = frame.add(28).read_volatile();
+                defmt::error!("Instruction pointer (mepc): 0x{:08X}", mepc);
+                panic!("unhandled exception");
             }
-            defmt::error!("Unhandled exception. Cause register: 0x{:08X}", cause);
-            let frame = current_sp as *const usize;
-            let mepc = frame.add(28).read_volatile();
-            defmt::error!("Instruction pointer (mepc): 0x{:08X}", mepc);
-            panic!("unhandled exception");
         }
     }
 
