@@ -2,4 +2,4 @@
 
 pub mod pmp;
 
-pub use pmp::{configure_pmp, PmpAddressMode, PmpConfig};
+pub use pmp::{configure_pmp, reprogram_pmp_stack, PmpAddressMode, PmpConfig};

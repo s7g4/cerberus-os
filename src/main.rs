@@ -27,9 +27,11 @@ extern "C" {
 pub static mut SCHEDULER: BitMapScheduler = BitMapScheduler::new();
 
 // Static buffers for task stacks (allocated statically, no heap)
-static mut TASK_A_STACK: [u8; 1024] = [0; 1024];
-static mut TASK_B_STACK: [u8; 1024] = [0; 1024];
+pub static mut TASK_A_STACK: [u8; 1024] = [0; 1024];
+pub static mut TASK_B_STACK: [u8; 1024] = [0; 1024];
 
+// Dedicated Kernel Interrupt Stack (M-mode execution)
+pub static mut KERNEL_STACK: [u8; 1024] = [0; 1024];
 #[riscv_rt::entry]
 fn main() -> ! {
     kmain();
@@ -44,7 +46,7 @@ pub fn kmain() -> ! {
         let trap_addr = _trap_entry as usize;
         core::arch::asm!("csrw mtvec, {}", in(reg) trap_addr);
 
-        // Initialize PMP boundaries (W^X rules)
+        // Initialize PMP boundaries (Priority Masking sandboxing rules)
         init_memory_protection();
 
         // Run cryptographic CAN stack self-test on boot
@@ -81,15 +83,6 @@ pub fn kmain() -> ! {
         // Start execution of the highest priority task
         sched.start_first_task();
     }
-}
-
-#[inline(always)]
-fn read_cycles() -> u32 {
-    let cycles: u32;
-    unsafe {
-        core::arch::asm!("csrr {0}, mcycle", out(reg) cycles);
-    }
-    cycles
 }
 
 /// Verification routine to test the CAN parser, ring buffer, and HMAC authentication on boot.
@@ -177,11 +170,12 @@ fn verify_network_and_security() {
     }
 }
 
-/// Configures hardware-level memory boundaries.
+/// Configures hardware-level memory boundaries using PMP priority masking.
 unsafe fn init_memory_protection() {
     use memory::{configure_pmp, PmpAddressMode, PmpConfig};
-    // Region 0: Flash/Code execution boundary (Read + Execute only, Locked)
-    // Base: 0x4200_0000, Size: 4MB (using NAPOT address mode)
+
+    // Entry 0: Flash/Code execution boundary (Read + Execute only, Locked)
+    // Applies globally to protect code segment.
     configure_pmp(
         0,
         0x4200_0000,
@@ -194,10 +188,27 @@ unsafe fn init_memory_protection() {
             locked: true,
         },
     );
-    // Region 1: SRAM/Data RAM boundary (Read + Write only, Locked - Prevents execution from RAM)
-    // Base: 0x3FC8_0000, Size: 512KB
+
+    // Entry 1: Inactive Task Stack Boundary (No Access, Unlocked)
+    // Initially blocks Task B's stack. Will be dynamically updated on context switch.
     configure_pmp(
         1,
+        core::ptr::addr_of!(TASK_B_STACK) as usize,
+        1024,
+        PmpConfig {
+            read: false,
+            write: false,
+            execute: false,
+            mode: PmpAddressMode::Napot,
+            locked: false,
+        },
+    );
+
+    // Entry 2: SRAM/Data RAM boundary (Read + Write only, Unlocked)
+    // Covers the entire RAM so that U-mode has standard variable access, but is
+    // blocked from the inactive stack because Entry 1 has higher priority.
+    configure_pmp(
+        2,
         0x3FC8_0000,
         512 * 1024,
         PmpConfig {
@@ -205,9 +216,29 @@ unsafe fn init_memory_protection() {
             write: true,
             execute: false,
             mode: PmpAddressMode::Napot,
-            locked: true,
+            locked: false,
         },
     );
+}
+
+/// Assembly cycle probe helper.
+#[inline(always)]
+fn read_cycles() -> u32 {
+    let cycles: u32;
+    unsafe {
+        core::arch::asm!("csrr {0}, mcycle", out(reg) cycles);
+    }
+    cycles
+}
+
+/// Syscall wrapper to trigger cooperative yields from User Mode.
+fn yield_now() {
+    unsafe {
+        core::arch::asm!(
+            "li a7, 1", // Syscall ID 1
+            "ecall"
+        );
+    }
 }
 
 /// Task A Entry point
@@ -258,10 +289,8 @@ extern "C" fn task_a() -> ! {
             kernel::dump_metrics();
         }
 
-        // Busy loop representing operational work
-        for _ in 0..50_000 {
-            unsafe { core::arch::asm!("nop") };
-        }
+        // Cooperatively yield processor to Task B
+        yield_now();
     }
 }
 
@@ -269,10 +298,8 @@ extern "C" fn task_a() -> ! {
 extern "C" fn task_b() -> ! {
     loop {
         defmt::info!("Task B is active");
-        // Busy loop representing operational work
-        for _ in 0..50_000 {
-            unsafe { core::arch::asm!("nop") };
-        }
+        // Cooperatively yield processor to Task A
+        yield_now();
     }
 }
 

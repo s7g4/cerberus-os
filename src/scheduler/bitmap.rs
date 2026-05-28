@@ -8,9 +8,9 @@ pub struct BitMapScheduler {
     /// Bit N = 1 indicates that the task at priority N is ready to run.
     ready_bitmap: u32,
     /// Task table containing TCBs mapped by priority.
-    task_table: [Option<TaskControlBlock>; MAX_TASKS],
+    pub task_table: [Option<TaskControlBlock>; MAX_TASKS],
     /// Priority of the currently running task.
-    current_priority: Option<u8>,
+    pub current_priority: Option<u8>,
 }
 
 impl Default for BitMapScheduler {
@@ -94,7 +94,7 @@ impl BitMapScheduler {
         Some((old_sp_ptr, new_sp))
     }
 
-    /// Bootstraps the stack pointer and registers to launch the first task.
+    /// Bootstraps the stack pointer and registers to launch the first task in U-mode.
     pub fn start_first_task(&mut self) -> ! {
         let next_prio = self
             .next_ready_priority()
@@ -105,26 +105,63 @@ impl BitMapScheduler {
         let new_tcb = self.task_table[next_prio as usize].as_mut().unwrap();
         new_tcb.state = TaskState::Running;
 
-        // Perform the initial stack restore and jump to the task's entry function
+        let user_sp = new_tcb.saved_sp;
+        let task_name = new_tcb.name;
+
         unsafe {
+            // 1. Set PMP isolation to block the inactive task's stack
+            crate::memory::reprogram_pmp_stack(task_name);
+
+            // 2. Point mscratch to the top of our dedicated Kernel Stack
+            let kernel_stack_top = core::ptr::addr_of_mut!(crate::KERNEL_STACK) as usize + 1024;
+            core::arch::asm!("csrw mscratch, {}", in(reg) kernel_stack_top);
+
+            // 3. Load user stack pointer, restore U-mode registers, and execute mret
             core::arch::asm!(
                 "mv sp, {0}",
+
+                // Load mepc and mstatus from the frame
+                "lw t0, 112(sp)",
+                "csrw mepc, t0",
+                "lw t1, 116(sp)",
+                "csrw mstatus, t1",
+
+                // Restore all user registers
                 "lw ra, 0(sp)",
-                "lw s0, 4(sp)",
-                "lw s1, 8(sp)",
-                "lw s2, 12(sp)",
-                "lw s3, 16(sp)",
-                "lw s4, 20(sp)",
-                "lw s5, 24(sp)",
-                "lw s6, 28(sp)",
-                "lw s7, 32(sp)",
-                "lw s8, 36(sp)",
-                "lw s9, 40(sp)",
-                "lw s10, 44(sp)",
-                "lw s11, 48(sp)",
-                "addi sp, sp, 64",
-                "ret",
-                in(reg) new_tcb.saved_sp,
+                "lw t0, 4(sp)",
+                "lw t1, 8(sp)",
+                "lw t2, 12(sp)",
+                "lw s0, 16(sp)",
+                "lw s1, 20(sp)",
+                "lw a0, 24(sp)",
+                "lw a1, 28(sp)",
+                "lw a2, 32(sp)",
+                "lw a3, 36(sp)",
+                "lw a4, 40(sp)",
+                "lw a5, 44(sp)",
+                "lw a6, 48(sp)",
+                "lw a7, 52(sp)",
+                "lw s2, 56(sp)",
+                "lw s3, 60(sp)",
+                "lw s4, 64(sp)",
+                "lw s5, 68(sp)",
+                "lw s6, 72(sp)",
+                "lw s7, 76(sp)",
+                "lw s8, 80(sp)",
+                "lw s9, 84(sp)",
+                "lw s10, 88(sp)",
+                "lw s11, 92(sp)",
+                "lw t3, 96(sp)",
+                "lw t4, 100(sp)",
+                "lw t5, 104(sp)",
+                "lw t6, 108(sp)",
+
+                // Deallocate user stack frame
+                "addi sp, sp, 128",
+
+                // Drop to User mode
+                "mret",
+                in(reg) user_sp,
                 options(noreturn)
             );
         }

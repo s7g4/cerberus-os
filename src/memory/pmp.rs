@@ -72,3 +72,29 @@ pub unsafe fn configure_pmp(entry: usize, base_addr: usize, size: usize, config:
 
     core::arch::asm!("csrw pmpcfg0, {}", in(reg) pmpcfg0);
 }
+
+/// Dynamically reprograms PMP Entry 1 to disable U-mode access to the inactive task's stack.
+pub unsafe fn reprogram_pmp_stack(active_task_name: &str) {
+    let addr_a = core::ptr::addr_of_mut!(crate::TASK_A_STACK) as usize;
+    let addr_b = core::ptr::addr_of_mut!(crate::TASK_B_STACK) as usize;
+
+    // Reprogram Entry 1 to deny Read, Write, and Execute to the inactive task's stack region
+    let inactive_base = if active_task_name == "Task A" {
+        addr_b
+    } else {
+        addr_a
+    };
+
+    configure_pmp(
+        1,
+        inactive_base,
+        1024,
+        PmpConfig {
+            read: false,
+            write: false,
+            execute: false,
+            mode: PmpAddressMode::Napot,
+            locked: false,
+        },
+    );
+}

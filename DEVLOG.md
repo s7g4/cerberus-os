@@ -142,3 +142,18 @@
   - Fixing CI `.text` matching issues: 15m
 - **Metric Captured**:
   - Measured context switch (54 cycles), CAN queue operations (18 cycles), and HMAC validation (8924 cycles) cycle counts.
+
+## Milestone 11 — User-Mode Promotion & PMP Stack Sandboxing
+- **Goal**: Implement User-Mode task execution, dynamic PMP stack sandboxing, separate kernel stack execution, and syscall traps.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: General-purpose `mv` instruction was used on `mscratch` CSR in assembly, causing invalid operand compile errors.
+    - *Fix*: Changed to `csrr a1, mscratch` (CSR read instruction).
+  - *Issue 2*: Linker failed with undefined symbols for `TASK_A_STACK` due to Rust static name mangling.
+    - *Fix*: Exposed the stacks as `pub` in `src/main.rs` and referenced them crate-wide as `crate::TASK_A_STACK` instead of `extern "C"`.
+- **Time Log**:
+  - Writing M-mode interrupt stack swapping (`mscratch`): 30m
+  - Porting context switcher to unified trap return (`mret`): 45m
+  - Implementing dynamic PMP stack masking: 35m
+  - Resolving linker mangling: 20m
+- **Metric Captured**:
+  - U-mode tasks successfully executing. Sandboxing verified locally via compiler checks.

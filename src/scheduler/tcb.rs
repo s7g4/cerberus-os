@@ -31,26 +31,29 @@ pub struct TaskControlBlock {
 }
 
 impl TaskControlBlock {
-    /// Initialize a task stack with a dummy context frame.
+    /// Initialize a task stack with a dummy context frame for U-Mode.
     ///
-    /// The stack grows downwards, so we calculate the top of the stack,
-    /// align it, allocate space for the frame, and populate it.
+    /// The stack frame is 128 bytes (32 words) and contains all registers
+    /// needed for a clean restore and mret transition.
     pub fn initialize_stack(stack: &mut [u8], entry_fn: extern "C" fn() -> !) -> usize {
         let stack_start = stack.as_ptr() as usize;
         let stack_end = stack_start + stack.len();
 
         // 16-byte stack alignment (ABI requirement)
-        let aligned_sp = (stack_end & !0xF) - 64;
+        let aligned_sp = (stack_end & !0xF) - 128;
 
         let frame = aligned_sp as *mut usize;
         unsafe {
-            // Store entry function in the ra slot (offset 0)
-            frame.write_volatile(entry_fn as usize);
-
-            // Clear callee-saved registers s0-s11 (offsets 4 to 48) to zero
-            for i in 1..=12 {
+            // Clear the entire 128-byte frame (32 words) to zero
+            for i in 0..32 {
                 frame.add(i).write_volatile(0);
             }
+
+            // Write mepc (offset 112, word index 28) = entry_fn
+            frame.add(28).write_volatile(entry_fn as usize);
+
+            // Write mstatus (offset 116, word index 29) = 0x80 (MPIE = 1, MPP = U-mode)
+            frame.add(29).write_volatile(0x80);
         }
 
         aligned_sp

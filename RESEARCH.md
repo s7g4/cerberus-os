@@ -166,3 +166,27 @@ To calculate the elapsed CPU cycles between a start time `t_start` and an end ti
 let elapsed = t_end.wrapping_sub(t_start);
 ```
 Under two's complement integer representation, if the counter overflows and wraps around to `0` after `t_start` but before `t_end`, the subtraction `t_end - t_start` automatically resolves to the correct modular difference. This guarantees cycle-accurate results under all conditions with zero branching overhead.
+
+## 14. User-Mode Privilege Transition & PMP Stack Sandboxing
+
+### User-Mode Drop via `mret`
+In RISC-V, direct register modifications cannot change the CPU privilege mode. Instead, transitions to lower privilege modes are executed via the exception return instruction (`mret`).
+On execution of `mret`, the hardware performs the following state updates:
+1. The Program Counter (`pc`) is loaded with the value stored in the `mepc` CSR.
+2. The privilege mode is set to the value stored in the Machine Previous Privilege (`MPP`) field of `mstatus` (bits [12:11]). Setting `MPP = 0` sets the target mode to User Mode (U-Mode).
+3. The global interrupt enable bit `mstatus.MIE` is loaded from `mstatus.MPIE` (Machine Previous Interrupt Enable).
+
+### PMP Priority Masking for Dynamic Stack Isolation
+PMP registers are evaluated sequentially from lowest index to highest index (Entry 0 to Entry 3). The first matching entry decides the access rights, and subsequent entries are ignored. We exploit this priority ordering to isolate task stacks:
+- **Entry 0**: Flash memory RX (Locked, global code execution).
+- **Entry 1**: Inactive Task's Stack region (No Access: R=0, W=0, X=0, Unlocked).
+- **Entry 2**: Global RAM RW (Read/Write Access: R=1, W=1, X=0, Unlocked).
+
+When Task A executes, Entry 1 is dynamically programmed to Task B's stack bounds. If Task A attempts to read or write to Task B's stack, it matches Entry 1 first, resulting in an immediate Store/Load Access Fault exception. Access to Task A's own stack or global variables misses Entry 1 and matches Entry 2, allowing standard execution.
+
+### Kernel Stack Isolation via `mscratch`
+To prevent user stack overflows or malicious corruption from affecting kernel trap handling, we maintain a separate Machine-Mode Interrupt Stack.
+1. The `mscratch` CSR holds the pointer to the top of the secure `KERNEL_STACK`.
+2. On trap entry, `csrrw sp, mscratch, sp` swaps the user stack pointer and the kernel stack pointer.
+3. The register context is saved directly to the user stack to maintain simple context-switching structures, but the Rust `trap_handler` executes entirely on the secure `KERNEL_STACK`.
+4. On return, `csrrw sp, mscratch, sp` restores the user stack pointer to the `sp` register, ensuring U-Mode runs on its own stack.
