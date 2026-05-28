@@ -190,3 +190,21 @@ To prevent user stack overflows or malicious corruption from affecting kernel tr
 2. On trap entry, `csrrw sp, mscratch, sp` swaps the user stack pointer and the kernel stack pointer.
 3. The register context is saved directly to the user stack to maintain simple context-switching structures, but the Rust `trap_handler` executes entirely on the secure `KERNEL_STACK`.
 4. On return, `csrrw sp, mscratch, sp` restores the user stack pointer to the `sp` register, ensuring U-Mode runs on its own stack.
+
+## 15. Real-Time Priority Inversion & Priority Inheritance Protocol (PIP)
+
+### The Priority Inversion Problem
+Priority inversion occurs when a low-priority task (T_L) holds a shared resource (like a mutex) required by a high-priority task (T_H). If an intermediate medium-priority task (T_M) becomes ready, it will preempt T_L (since T_M has higher priority than T_L). This prevents T_L from completing its critical section and releasing the lock. Consequently, T_H remains blocked on the resource, indirectly starved by T_M—effectively reversing the system's priority model.
+
+### Priority Inheritance Protocol (PIP)
+To solve this, we implement the Priority Inheritance Protocol:
+1. When T_H attempts to acquire a mutex held by T_L, the kernel blocks T_H.
+2. The kernel temporarily raises the active priority of the lock owner (T_L) to match the priority of T_H (T_active = P_H).
+3. Now, T_L executes at priority P_H, allowing it to preempt T_M and finish its critical section.
+4. When T_L releases the mutex, its active priority is restored to its base priority (T_active = P_L).
+
+### O(1) Priority Mapping Array
+To prevent priority boosts from degrading our O(1) scheduler complexity into an O(N) search loop, we introduce a lookup array:
+```rust
+pub priority_to_task: [Option<u8>; MAX_TASKS]
+```

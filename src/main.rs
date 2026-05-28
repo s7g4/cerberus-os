@@ -29,9 +29,35 @@ pub static mut SCHEDULER: BitMapScheduler = BitMapScheduler::new();
 // Static buffers for task stacks (allocated statically, no heap)
 pub static mut TASK_A_STACK: [u8; 1024] = [0; 1024];
 pub static mut TASK_B_STACK: [u8; 1024] = [0; 1024];
+pub static mut TASK_C_STACK: [u8; 1024] = [0; 1024];
 
 // Dedicated Kernel Interrupt Stack (M-mode execution)
 pub static mut KERNEL_STACK: [u8; 1024] = [0; 1024];
+
+// Kernel Mutex representation
+pub struct KernelMutex {
+    pub locked: bool,
+    pub owner_task_idx: Option<u8>,
+    pub waiters_bitmap: u32,
+}
+
+// Static array of Mutex locks
+#[no_mangle]
+pub static mut MUTEXES: [Option<KernelMutex>; 8] = [
+    Some(KernelMutex {
+        locked: false,
+        owner_task_idx: None,
+        waiters_bitmap: 0,
+    }),
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+];
+
 #[riscv_rt::entry]
 fn main() -> ! {
     kmain();
@@ -57,22 +83,34 @@ pub fn kmain() -> ! {
             TaskControlBlock::initialize_stack(&mut *core::ptr::addr_of_mut!(TASK_A_STACK), task_a);
         let sp_b =
             TaskControlBlock::initialize_stack(&mut *core::ptr::addr_of_mut!(TASK_B_STACK), task_b);
+        let sp_c =
+            TaskControlBlock::initialize_stack(&mut *core::ptr::addr_of_mut!(TASK_C_STACK), task_c);
 
         let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
 
         // Register tasks inside the scheduler
         sched.register_task(TaskControlBlock {
             saved_sp: sp_a,
-            priority: 1, // Higher priority (lower numerical value)
+            priority: 1, // High priority
+            active_priority: 1,
             state: TaskState::Ready,
             name: "Task A",
         });
 
         sched.register_task(TaskControlBlock {
             saved_sp: sp_b,
-            priority: 2,
+            priority: 2, // Medium priority
+            active_priority: 2,
             state: TaskState::Ready,
             name: "Task B",
+        });
+
+        sched.register_task(TaskControlBlock {
+            saved_sp: sp_c,
+            priority: 3, // Low priority
+            active_priority: 3,
+            state: TaskState::Ready,
+            name: "Task C",
         });
 
         // Configure timer tick interrupts
@@ -175,7 +213,6 @@ unsafe fn init_memory_protection() {
     use memory::{configure_pmp, PmpAddressMode, PmpConfig};
 
     // Entry 0: Flash/Code execution boundary (Read + Execute only, Locked)
-    // Applies globally to protect code segment.
     configure_pmp(
         0,
         0x4200_0000,
@@ -189,8 +226,7 @@ unsafe fn init_memory_protection() {
         },
     );
 
-    // Entry 1: Inactive Task Stack Boundary (No Access, Unlocked)
-    // Initially blocks Task B's stack. Will be dynamically updated on context switch.
+    // Entry 1: Inactive Stack 1 (No Access, Unlocked)
     configure_pmp(
         1,
         core::ptr::addr_of!(TASK_B_STACK) as usize,
@@ -204,11 +240,23 @@ unsafe fn init_memory_protection() {
         },
     );
 
-    // Entry 2: SRAM/Data RAM boundary (Read + Write only, Unlocked)
-    // Covers the entire RAM so that U-mode has standard variable access, but is
-    // blocked from the inactive stack because Entry 1 has higher priority.
+    // Entry 2: Inactive Stack 2 (No Access, Unlocked)
     configure_pmp(
         2,
+        core::ptr::addr_of!(TASK_C_STACK) as usize,
+        1024,
+        PmpConfig {
+            read: false,
+            write: false,
+            execute: false,
+            mode: PmpAddressMode::Napot,
+            locked: false,
+        },
+    );
+
+    // Entry 3: SRAM/Data RAM boundary (Read + Write only, Unlocked)
+    configure_pmp(
+        3,
         0x3FC8_0000,
         512 * 1024,
         PmpConfig {
@@ -234,71 +282,86 @@ fn read_cycles() -> u32 {
 /// Syscall wrapper to trigger cooperative yields from User Mode.
 fn yield_now() {
     unsafe {
+        core::arch::asm!("li a7, 1", "ecall");
+    }
+}
+
+/// Syscall wrapper to lock a Mutex.
+fn lock_mutex(idx: usize) {
+    unsafe {
         core::arch::asm!(
-            "li a7, 1", // Syscall ID 1
-            "ecall"
+            "li a7, 3",
+            "mv a0, {}",
+            "ecall",
+            in(reg) idx
         );
     }
 }
 
-/// Task A Entry point
+/// Syscall wrapper to unlock a Mutex.
+fn unlock_mutex(idx: usize) {
+    unsafe {
+        core::arch::asm!(
+            "li a7, 4",
+            "mv a0, {}",
+            "ecall",
+            in(reg) idx
+        );
+    }
+}
+
+/// Task A Entry point (High Priority)
 extern "C" fn task_a() -> ! {
-    use core::sync::atomic::Ordering;
-    use network::{CanFrame, CanRingBuffer};
-    use security::{compute_hmac, verify_frame, AuthFrame};
-
     let mut loop_count = 0u32;
-    let mut can_queue = CanRingBuffer::new();
-
-    // Prepare a template valid frame
-    let mut raw_frame = [0u8; 13];
-    raw_frame[0] = 0x3E; // ID 0x1F0
-    raw_frame[1] = 0x00;
-    raw_frame[2] = 4; // DLC
-    raw_frame[3] = 0xAA;
-    raw_frame[4] = 0xBB;
-    raw_frame[5] = 0xCC;
-    raw_frame[6] = 0xDD;
-    let test_frame = CanFrame::parse(&raw_frame).unwrap();
-
     loop {
-        defmt::info!("Task A (Stress Test): enqueuing load...");
-        loop_count = loop_count.wrapping_add(1);
+        defmt::info!("Task A (High) loop starting. Trying to lock Mutex 0...");
+        lock_mutex(0);
+        defmt::info!("Task A (High) locked Mutex 0 successfully.");
 
-        // Inject 100 CAN queue and verification operations back-to-back
-        for i in 0..100 {
-            let start = read_cycles();
-            let _ = can_queue.push(test_frame);
-            let popped = can_queue.pop();
-            let end = read_cycles();
-
-            if i == 0 {
-                kernel::metrics::METRIC_CAN_QUEUE_CYCLES
-                    .store(end.wrapping_sub(start), Ordering::Relaxed);
-            }
-
-            if let Some(frame) = popped {
-                let tag = compute_hmac(&frame);
-                let auth = AuthFrame { frame, tag };
-                let _ = verify_frame(&auth);
-            }
+        // Small busy work
+        for _ in 0..10_000 {
+            unsafe { core::arch::asm!("nop") };
         }
 
-        // Periodically dump the metrics dashboard to the host JTAG stream
+        defmt::info!("Task A (High) releasing Mutex 0...");
+        unlock_mutex(0);
+        defmt::info!("Task A (High) released Mutex 0.");
+
+        loop_count = loop_count.wrapping_add(1);
         if loop_count % 10 == 0 {
             kernel::dump_metrics();
         }
 
-        // Cooperatively yield processor to Task B
         yield_now();
     }
 }
 
-/// Task B Entry point
+/// Task B Entry point (Medium Priority)
 extern "C" fn task_b() -> ! {
     loop {
-        defmt::info!("Task B is active");
-        // Cooperatively yield processor to Task A
+        defmt::info!("Task B (Medium) is active. Running heavy loop...");
+        // Large compute loop. Without PIP, this would starve Task C and block Task A forever.
+        for _ in 0..80_000 {
+            unsafe { core::arch::asm!("nop") };
+        }
+        defmt::info!("Task B (Medium) yielding.");
+        yield_now();
+    }
+}
+
+/// Task C Entry point (Low Priority)
+extern "C" fn task_c() -> ! {
+    loop {
+        defmt::info!("Task C (Low) starting. Locking Mutex 0...");
+        lock_mutex(0);
+        defmt::info!("Task C (Low) acquired Mutex 0. Yielding to let high priority run...");
+
+        yield_now(); // Yield to let Task A preempt us and block on Mutex 0
+
+        defmt::info!("Task C (Low) resumed. Releasing Mutex 0...");
+        unlock_mutex(0);
+        defmt::info!("Task C (Low) released Mutex 0. Yielding.");
+
         yield_now();
     }
 }

@@ -59,18 +59,16 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
         }
         ECALL_UMODE => {
             // Read registers from user stack frame
-            // a7 (syscall ID) is at index 13 (offset 52 bytes)
             let frame = current_sp as *mut usize;
-            let syscall_id = frame.add(13).read_volatile();
+            let syscall_id = frame.add(13).read_volatile(); // a7 is index 13 (offset 52)
 
-            // Advance PC past the ecall instruction (2 bytes in C extension, 4 bytes standard)
-            // Since we target riscv32imac (compressed instructions active), ecall is 4 bytes.
+            // Advance PC past the 4-byte ecall instruction
             let mepc = frame.add(28).read_volatile(); // mepc is index 28 (offset 112)
             frame.add(28).write_volatile(mepc + 4);
 
             match syscall_id {
                 1 => {
-                    // Cooperative Yield Syscall
+                    // Syscall 1: Cooperative Yield
                     extern "Rust" {
                         static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
                     }
@@ -82,6 +80,147 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                         if let Some(prio) = sched.current_priority {
                             if let Some(new_tcb) = &sched.task_table[prio as usize] {
                                 crate::memory::reprogram_pmp_stack(new_tcb.name);
+                            }
+                        }
+                    }
+                }
+                3 => {
+                    // Syscall 3: Lock Mutex
+                    let mutex_idx = frame.add(6).read_volatile(); // a0 is index 6 (offset 24)
+                    extern "Rust" {
+                        static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
+                        static mut MUTEXES: [Option<crate::KernelMutex>; 8];
+                    }
+                    let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+                    let running_idx = sched.current_priority.unwrap() as usize;
+
+                    if let Some(mutex) = &mut (*core::ptr::addr_of_mut!(MUTEXES))[mutex_idx] {
+                        if !mutex.locked {
+                            mutex.locked = true;
+                            mutex.owner_task_idx = Some(running_idx as u8);
+                        } else {
+                            // Mutex is locked: block the current task on the mutex
+                            sched.task_table[running_idx].as_mut().unwrap().state =
+                                crate::scheduler::TaskState::BlockedOnMutex {
+                                    mutex_idx: mutex_idx as u8,
+                                };
+
+                            let active_prio = sched.task_table[running_idx]
+                                .as_ref()
+                                .unwrap()
+                                .active_priority;
+                            sched.ready_bitmap &= !(1 << active_prio);
+                            mutex.waiters_bitmap |= 1 << running_idx;
+
+                            // Priority Inheritance Protocol (PIP)
+                            let owner_idx = mutex.owner_task_idx.unwrap() as usize;
+                            let current_prio =
+                                sched.task_table[running_idx].as_ref().unwrap().priority;
+                            let owner_active_prio = sched.task_table[owner_idx]
+                                .as_ref()
+                                .unwrap()
+                                .active_priority;
+
+                            if current_prio < owner_active_prio {
+                                // Boost the owner's active priority
+                                let owner_tcb = sched.task_table[owner_idx].as_mut().unwrap();
+                                if owner_tcb.state == crate::scheduler::TaskState::Ready {
+                                    sched.ready_bitmap &= !(1 << owner_active_prio);
+                                    sched.ready_bitmap |= 1 << current_prio;
+                                }
+                                owner_tcb.active_priority = current_prio;
+                                sched.priority_to_task[current_prio as usize] =
+                                    Some(owner_idx as u8);
+                                sched.priority_to_task[owner_active_prio as usize] = None;
+                                defmt::info!(
+                                    "PIP: Boosted Task {} Priority from {} to {}",
+                                    owner_tcb.name,
+                                    owner_active_prio,
+                                    current_prio
+                                );
+                            }
+
+                            // Reschedule because the current task is blocked
+                            if let Some((old_sp_ptr, new_sp)) = sched.schedule() {
+                                old_sp_ptr.write_volatile(current_sp);
+                                current_sp = new_sp;
+                                if let Some(prio) = sched.current_priority {
+                                    if let Some(new_tcb) = &sched.task_table[prio as usize] {
+                                        crate::memory::reprogram_pmp_stack(new_tcb.name);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                4 => {
+                    // Syscall 4: Unlock Mutex
+                    let mutex_idx = frame.add(6).read_volatile(); // a0
+                    extern "Rust" {
+                        static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
+                        static mut MUTEXES: [Option<crate::KernelMutex>; 8];
+                    }
+                    let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+                    let running_idx = sched.current_priority.unwrap() as usize;
+
+                    if let Some(mutex) = &mut (*core::ptr::addr_of_mut!(MUTEXES))[mutex_idx] {
+                        assert_eq!(mutex.owner_task_idx, Some(running_idx as u8));
+
+                        // Find the highest priority waiter in the bitmap
+                        let mut highest_waiter: Option<usize> = None;
+                        for i in 0..32 {
+                            if (mutex.waiters_bitmap & (1 << i)) != 0 {
+                                if let Some(w) = highest_waiter {
+                                    let w_prio = sched.task_table[w].as_ref().unwrap().priority;
+                                    let i_prio = sched.task_table[i].as_ref().unwrap().priority;
+                                    if i_prio < w_prio {
+                                        highest_waiter = Some(i);
+                                    }
+                                } else {
+                                    highest_waiter = Some(i);
+                                }
+                            }
+                        }
+
+                        // Restore owner (current task) priority if it was boosted
+                        let current_tcb = sched.task_table[running_idx].as_mut().unwrap();
+                        let base_prio = current_tcb.priority;
+                        let active_prio = current_tcb.active_priority;
+                        if active_prio != base_prio {
+                            current_tcb.active_priority = base_prio;
+                            sched.priority_to_task[base_prio as usize] = Some(running_idx as u8);
+                            sched.priority_to_task[active_prio as usize] = None;
+                            defmt::info!(
+                                "PIP: Restored Task {} Priority from {} to {}",
+                                current_tcb.name,
+                                active_prio,
+                                base_prio
+                            );
+                        }
+
+                        if let Some(waiter_idx) = highest_waiter {
+                            // Transfer ownership to the highest priority waiter
+                            mutex.owner_task_idx = Some(waiter_idx as u8);
+                            mutex.waiters_bitmap &= !(1 << waiter_idx);
+
+                            // Unblock the waiter
+                            let waiter_tcb = sched.task_table[waiter_idx].as_mut().unwrap();
+                            waiter_tcb.state = crate::scheduler::TaskState::Ready;
+                            let waiter_active = waiter_tcb.active_priority;
+                            sched.ready_bitmap |= 1 << waiter_active;
+                        } else {
+                            mutex.locked = false;
+                            mutex.owner_task_idx = None;
+                        }
+
+                        // Reschedule to let higher priority unblocked waiter run immediately
+                        if let Some((old_sp_ptr, new_sp)) = sched.schedule() {
+                            old_sp_ptr.write_volatile(current_sp);
+                            current_sp = new_sp;
+                            if let Some(prio) = sched.current_priority {
+                                if let Some(new_tcb) = &sched.task_table[prio as usize] {
+                                    crate::memory::reprogram_pmp_stack(new_tcb.name);
+                                }
                             }
                         }
                     }

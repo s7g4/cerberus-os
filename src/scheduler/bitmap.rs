@@ -6,11 +6,13 @@ pub const MAX_TASKS: usize = 32;
 
 pub struct BitMapScheduler {
     /// Bit N = 1 indicates that the task at priority N is ready to run.
-    ready_bitmap: u32,
+    pub ready_bitmap: u32,
     /// Task table containing TCBs mapped by priority.
     pub task_table: [Option<TaskControlBlock>; MAX_TASKS],
     /// Priority of the currently running task.
     pub current_priority: Option<u8>,
+    /// O(1) active priority to task table index mapping.
+    pub priority_to_task: [Option<u8>; MAX_TASKS],
 }
 
 impl Default for BitMapScheduler {
@@ -25,21 +27,25 @@ impl BitMapScheduler {
             ready_bitmap: 0,
             task_table: [const { None }; MAX_TASKS],
             current_priority: None,
+            priority_to_task: [const { None }; MAX_TASKS],
         }
     }
 
     /// Register a task in the scheduler table.
-    pub fn register_task(&mut self, tcb: TaskControlBlock) {
+    pub fn register_task(&mut self, mut tcb: TaskControlBlock) {
         let prio = tcb.priority as usize;
         assert!(prio < MAX_TASKS, "Priority out of bounds");
+
+        tcb.active_priority = tcb.priority; // Active priority starts at base
 
         if tcb.state == TaskState::Ready {
             self.ready_bitmap |= 1 << prio;
         }
+        self.priority_to_task[prio] = Some(tcb.priority);
         self.task_table[prio] = Some(tcb);
     }
 
-    /// Get the highest priority ready task in O(1) time.
+    /// Get the highest active priority ready task in O(1) time.
     pub fn next_ready_priority(&self) -> Option<u8> {
         if self.ready_bitmap == 0 {
             None
@@ -60,36 +66,37 @@ impl BitMapScheduler {
     }
 
     /// Runs the scheduling algorithm to select the next task.
-    ///
-    /// Returns the old TCB's stack pointer address and the new stack pointer if a switch is needed.
     pub fn schedule(&mut self) -> Option<(*mut usize, usize)> {
-        let next_prio = self.next_ready_priority()?;
+        let next_active_prio = self.next_ready_priority()?;
+        let next_task_idx = self.priority_to_task[next_active_prio as usize]? as usize;
 
-        // If the highest priority ready task is already running, no context switch is needed.
-        if Some(next_prio) == self.current_priority {
+        // If the selected task is already running, no context switch is needed.
+        if Some(next_task_idx as u8) == self.current_priority {
             return None;
         }
 
-        let old_prio = self.current_priority.take()?;
+        let old_task_idx = self.current_priority.take()? as usize;
 
         // Put the old task back to Ready state if it was running
-        if let Some(old_tcb) = &mut self.task_table[old_prio as usize] {
+        if let Some(old_tcb) = &mut self.task_table[old_task_idx] {
             if old_tcb.state == TaskState::Running {
                 old_tcb.state = TaskState::Ready;
-                self.mark_ready(old_prio);
+                let active = old_tcb.active_priority;
+                self.mark_ready(active);
             }
         }
 
         // Set the new task to Running
-        self.current_priority = Some(next_prio);
-        self.mark_blocked(next_prio);
+        self.current_priority = Some(next_task_idx as u8);
+        let new_active_prio = self.task_table[next_task_idx].as_ref()?.active_priority;
+        self.mark_blocked(new_active_prio);
 
-        if let Some(new_tcb) = &mut self.task_table[next_prio as usize] {
+        if let Some(new_tcb) = &mut self.task_table[next_task_idx] {
             new_tcb.state = TaskState::Running;
         }
 
-        let old_sp_ptr = &mut self.task_table[old_prio as usize].as_mut()?.saved_sp as *mut usize;
-        let new_sp = self.task_table[next_prio as usize].as_ref()?.saved_sp;
+        let old_sp_ptr = &mut self.task_table[old_task_idx].as_mut()?.saved_sp as *mut usize;
+        let new_sp = self.task_table[next_task_idx].as_ref()?.saved_sp;
 
         Some((old_sp_ptr, new_sp))
     }
@@ -109,7 +116,7 @@ impl BitMapScheduler {
         let task_name = new_tcb.name;
 
         unsafe {
-            // 1. Set PMP isolation to block the inactive task's stack
+            // 1. Set PMP isolation to block the inactive task stacks
             crate::memory::reprogram_pmp_stack(task_name);
 
             // 2. Point mscratch to the top of our dedicated Kernel Stack

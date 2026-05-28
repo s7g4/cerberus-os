@@ -157,3 +157,15 @@
   - Resolving linker mangling: 20m
 - **Metric Captured**:
   - U-mode tasks successfully executing. Sandboxing verified locally via compiler checks.
+
+## Milestone 12 — Priority Inheritance Mutexes (PIP)
+- **Goal**: Implement mutual exclusion locks and integrate the Priority Inheritance Protocol into the O(1) bitmap scheduler.
+- **What Broke & How it Was Fixed**:
+  - *No compile breaks*. Successfully verified that the priority-to-task index lookup array preserves O(1) scheduling complexity under priority boosting.
+- **Time Log**:
+  - Designing Priority Inheritance logic: 40m
+  - Writing mutex lock/unlock syscalls: 45m
+  - Setting up 3-stack PMP priority masking bounds: 30m
+  - Implementing PIP demonstration tasks (Task A, B, C): 35m
+- **Metric Captured**:
+  - Priority inheritance verified. Telemetry logs confirm Task C's priority was temporarily boosted from 3 to 1 to bypass Task B and unblock Task A.
