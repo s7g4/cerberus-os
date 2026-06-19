@@ -49,28 +49,26 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
             let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
 
             // Scan and wake tasks blocked on ticks
-            for i in 0..crate::scheduler::bitmap::MAX_TASKS {
+            for i in 0..crate::scheduler::bitmap::MAX_PARTITIONS {
                 if let Some(tcb) = &mut sched.task_table[i] {
                     if let crate::scheduler::TaskState::Blocked { wake_tick } = tcb.state {
                         if tick >= wake_tick {
                             tcb.state = crate::scheduler::TaskState::Ready;
-                            sched.ready_bitmap |= 1 << tcb.active_priority;
                         }
                     }
                 }
             }
 
-            if let Some((old_sp_ptr, new_sp)) = sched.schedule() {
+            if let Some((old_sp_ptr, new_sp)) = sched.schedule(true) {
                 // Save the stack pointer of the outgoing task
                 old_sp_ptr.write_volatile(current_sp);
                 // Load the new stack pointer
                 current_sp = new_sp;
 
                 // Reprogram PMP stack sandboxing rules for the incoming task
-                if let Some(prio) = sched.current_priority {
-                    if let Some(new_tcb) = &sched.task_table[prio as usize] {
-                        crate::memory::reprogram_pmp_stack(new_tcb.name);
-                    }
+                let active_idx = sched.current_partition_idx;
+                if let Some(new_tcb) = &sched.task_table[active_idx] {
+                    crate::memory::reprogram_pmp_stack(new_tcb.name);
                 }
             }
         }
@@ -90,53 +88,50 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                         static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
                     }
                     let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
-                    if let Some((old_sp_ptr, new_sp)) = sched.schedule() {
+                    if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
                         old_sp_ptr.write_volatile(current_sp);
                         current_sp = new_sp;
 
-                        if let Some(prio) = sched.current_priority {
-                            if let Some(new_tcb) = &sched.task_table[prio as usize] {
-                                crate::memory::reprogram_pmp_stack(new_tcb.name);
-                            }
+                        let active_idx = sched.current_partition_idx;
+                        if let Some(new_tcb) = &sched.task_table[active_idx] {
+                            crate::memory::reprogram_pmp_stack(new_tcb.name);
                         }
                     }
                 }
                 2 => {
                     // Syscall 2: Sleep Ticks
-                    let ticks = frame.add(6).read_volatile(); // a0 is index 6 (offset 24)
+                    let ticks = frame.add(6).read_volatile(); // a0
                     extern "Rust" {
                         static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
                     }
                     let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
-                    let running_idx = sched.current_priority.unwrap() as usize;
+                    let running_idx = sched.current_partition_idx;
 
                     let current_tick = TICK_COUNT.load(Ordering::Relaxed);
                     let tcb = sched.task_table[running_idx].as_mut().unwrap();
                     tcb.state = crate::scheduler::TaskState::Blocked {
                         wake_tick: current_tick + ticks as u32,
                     };
-                    sched.ready_bitmap &= !(1 << tcb.active_priority);
 
                     // Reschedule because the current task is now blocked
-                    if let Some((old_sp_ptr, new_sp)) = sched.schedule() {
+                    if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
                         old_sp_ptr.write_volatile(current_sp);
                         current_sp = new_sp;
-                        if let Some(prio) = sched.current_priority {
-                            if let Some(new_tcb) = &sched.task_table[prio as usize] {
-                                crate::memory::reprogram_pmp_stack(new_tcb.name);
-                            }
+                        let active_idx = sched.current_partition_idx;
+                        if let Some(new_tcb) = &sched.task_table[active_idx] {
+                            crate::memory::reprogram_pmp_stack(new_tcb.name);
                         }
                     }
                 }
                 3 => {
                     // Syscall 3: Lock Mutex
-                    let mutex_idx = frame.add(6).read_volatile(); // a0 is index 6 (offset 24)
+                    let mutex_idx = frame.add(6).read_volatile(); // a0
                     extern "Rust" {
                         static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
                         static mut MUTEXES: [Option<crate::KernelMutex>; 8];
                     }
                     let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
-                    let running_idx = sched.current_priority.unwrap() as usize;
+                    let running_idx = sched.current_partition_idx;
 
                     if let Some(mutex) = &mut (*core::ptr::addr_of_mut!(MUTEXES))[mutex_idx] {
                         if !mutex.locked {
@@ -149,49 +144,15 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                     mutex_idx: mutex_idx as u8,
                                 };
 
-                            let active_prio = sched.task_table[running_idx]
-                                .as_ref()
-                                .unwrap()
-                                .active_priority;
-                            sched.ready_bitmap &= !(1 << active_prio);
                             mutex.waiters_bitmap |= 1 << running_idx;
 
-                            // Priority Inheritance Protocol (PIP)
-                            let owner_idx = mutex.owner_task_idx.unwrap() as usize;
-                            let current_prio =
-                                sched.task_table[running_idx].as_ref().unwrap().priority;
-                            let owner_active_prio = sched.task_table[owner_idx]
-                                .as_ref()
-                                .unwrap()
-                                .active_priority;
-
-                            if current_prio < owner_active_prio {
-                                // Boost the owner's active priority
-                                let owner_tcb = sched.task_table[owner_idx].as_mut().unwrap();
-                                if owner_tcb.state == crate::scheduler::TaskState::Ready {
-                                    sched.ready_bitmap &= !(1 << owner_active_prio);
-                                    sched.ready_bitmap |= 1 << current_prio;
-                                }
-                                owner_tcb.active_priority = current_prio;
-                                sched.priority_to_task[current_prio as usize] =
-                                    Some(owner_idx as u8);
-                                sched.priority_to_task[owner_active_prio as usize] = None;
-                                defmt::info!(
-                                    "PIP: Boosted Task {} Priority from {} to {}",
-                                    owner_tcb.name,
-                                    owner_active_prio,
-                                    current_prio
-                                );
-                            }
-
                             // Reschedule because the current task is blocked
-                            if let Some((old_sp_ptr, new_sp)) = sched.schedule() {
+                            if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
                                 old_sp_ptr.write_volatile(current_sp);
                                 current_sp = new_sp;
-                                if let Some(prio) = sched.current_priority {
-                                    if let Some(new_tcb) = &sched.task_table[prio as usize] {
-                                        crate::memory::reprogram_pmp_stack(new_tcb.name);
-                                    }
+                                let active_idx = sched.current_partition_idx;
+                                if let Some(new_tcb) = &sched.task_table[active_idx] {
+                                    crate::memory::reprogram_pmp_stack(new_tcb.name);
                                 }
                             }
                         }
@@ -205,7 +166,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                         static mut MUTEXES: [Option<crate::KernelMutex>; 8];
                     }
                     let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
-                    let running_idx = sched.current_priority.unwrap() as usize;
+                    let running_idx = sched.current_partition_idx;
 
                     if let Some(mutex) = &mut (*core::ptr::addr_of_mut!(MUTEXES))[mutex_idx] {
                         assert_eq!(mutex.owner_task_idx, Some(running_idx as u8));
@@ -226,45 +187,26 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                             }
                         }
 
-                        // Restore owner (current task) priority if it was boosted
-                        let current_tcb = sched.task_table[running_idx].as_mut().unwrap();
-                        let base_prio = current_tcb.priority;
-                        let active_prio = current_tcb.active_priority;
-                        if active_prio != base_prio {
-                            current_tcb.active_priority = base_prio;
-                            sched.priority_to_task[base_prio as usize] = Some(running_idx as u8);
-                            sched.priority_to_task[active_prio as usize] = None;
-                            defmt::info!(
-                                "PIP: Restored Task {} Priority from {} to {}",
-                                current_tcb.name,
-                                active_prio,
-                                base_prio
-                            );
-                        }
-
                         if let Some(waiter_idx) = highest_waiter {
-                            // Transfer ownership to the highest priority waiter
+                            // Transfer ownership to the waiter
                             mutex.owner_task_idx = Some(waiter_idx as u8);
                             mutex.waiters_bitmap &= !(1 << waiter_idx);
 
                             // Unblock the waiter
                             let waiter_tcb = sched.task_table[waiter_idx].as_mut().unwrap();
                             waiter_tcb.state = crate::scheduler::TaskState::Ready;
-                            let waiter_active = waiter_tcb.active_priority;
-                            sched.ready_bitmap |= 1 << waiter_active;
                         } else {
                             mutex.locked = false;
                             mutex.owner_task_idx = None;
                         }
 
-                        // Reschedule to let higher priority unblocked waiter run immediately
-                        if let Some((old_sp_ptr, new_sp)) = sched.schedule() {
+                        // Reschedule to run unblocked waiter if a swap is triggered
+                        if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
                             old_sp_ptr.write_volatile(current_sp);
                             current_sp = new_sp;
-                            if let Some(prio) = sched.current_priority {
-                                if let Some(new_tcb) = &sched.task_table[prio as usize] {
-                                    crate::memory::reprogram_pmp_stack(new_tcb.name);
-                                }
+                            let active_idx = sched.current_partition_idx;
+                            if let Some(new_tcb) = &sched.task_table[active_idx] {
+                                crate::memory::reprogram_pmp_stack(new_tcb.name);
                             }
                         }
                     }
@@ -275,10 +217,9 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                         static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
                     }
                     let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
-                    if let Some(running_idx) = sched.current_priority {
-                        let current_tick = TICK_COUNT.load(Ordering::Relaxed);
-                        LAST_CHECKIN_TICK[running_idx as usize] = current_tick;
-                    }
+                    let running_idx = sched.current_partition_idx;
+                    let current_tick = TICK_COUNT.load(Ordering::Relaxed);
+                    LAST_CHECKIN_TICK[running_idx] = current_tick;
                 }
                 _ => {
                     defmt::warn!("Unhandled syscall ID: {}", syscall_id);
@@ -294,7 +235,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
                 }
                 let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
-                let running_idx = sched.current_priority.unwrap() as usize;
+                let running_idx = sched.current_partition_idx;
 
                 if let Some(tcb) = &mut sched.task_table[running_idx] {
                     defmt::error!(
@@ -306,13 +247,12 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                 }
 
                 // Reschedule to run a healthy task
-                if let Some((old_sp_ptr, new_sp)) = sched.schedule() {
+                if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
                     old_sp_ptr.write_volatile(current_sp);
                     current_sp = new_sp;
-                    if let Some(prio) = sched.current_priority {
-                        if let Some(new_tcb) = &sched.task_table[prio as usize] {
-                            crate::memory::reprogram_pmp_stack(new_tcb.name);
-                        }
+                    let active_idx = sched.current_partition_idx;
+                    if let Some(new_tcb) = &sched.task_table[active_idx] {
+                        crate::memory::reprogram_pmp_stack(new_tcb.name);
                     }
                 }
             } else {
