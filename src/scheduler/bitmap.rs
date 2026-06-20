@@ -2,7 +2,7 @@
 
 use crate::scheduler::tcb::{TaskControlBlock, TaskState};
 
-pub const MAX_PARTITIONS: usize = 4;
+pub const MAX_PARTITIONS: usize = 32;
 
 pub struct BitMapScheduler {
     /// Task table containing TCBs mapped by partition index.
@@ -26,7 +26,7 @@ impl BitMapScheduler {
         Self {
             task_table: [const { None }; MAX_PARTITIONS],
             current_partition_idx: 0,
-            partition_durations: [100, 100, 100, 100], // Default 100 ticks per MIF
+            partition_durations: [100; MAX_PARTITIONS], // Default 100 ticks per MIF
             remaining_mif_ticks: 100,
         }
     }
