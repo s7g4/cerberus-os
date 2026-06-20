@@ -186,3 +186,87 @@ impl BitMapScheduler {
         }
     }
 }
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    // Safely generate a valid symbolic TaskState variant
+    fn any_task_state() -> TaskState {
+        match kani::any::<u8>() % 5 {
+            0 => TaskState::Ready,
+            1 => TaskState::Running,
+            2 => TaskState::Blocked {
+                wake_tick: kani::any::<u32>(),
+            },
+            3 => TaskState::BlockedOnMutex {
+                mutex_idx: kani::any::<u8>(),
+            },
+            _ => TaskState::Terminated,
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(33)] // Loop runs up to MAX_PARTITIONS (32) times
+    fn verify_scheduler_invariants() {
+        let mut sched = BitMapScheduler::new();
+
+        // 1. Populate the scheduler task table with symbolic tasks
+        for i in 0..MAX_PARTITIONS {
+            if kani::any::<bool>() {
+                let state = any_task_state();
+                let priority = i as u8;
+                let tcb = TaskControlBlock {
+                    saved_sp: kani::any::<usize>(),
+                    priority,
+                    active_priority: priority,
+                    state,
+                    name: "Symbolic Task",
+                    capabilities: [crate::scheduler::Capability::None; 8],
+                };
+                sched.task_table[i] = Some(tcb);
+            }
+        }
+
+        // Generate symbolic scheduler context variables
+        let is_tick = kani::any::<bool>();
+        let current_partition_idx = kani::any::<usize>() % MAX_PARTITIONS;
+        sched.current_partition_idx = current_partition_idx;
+
+        let remaining_mif_ticks = kani::any::<u32>();
+        kani::assume(remaining_mif_ticks <= 100);
+        sched.remaining_mif_ticks = remaining_mif_ticks;
+
+        // Detect if there is at least one ready task in the system
+        let mut has_ready_task = false;
+        for i in 0..MAX_PARTITIONS {
+            if let Some(tcb) = &sched.task_table[i] {
+                if tcb.state == TaskState::Ready
+                    || (i == current_partition_idx && tcb.state == TaskState::Running)
+                {
+                    has_ready_task = true;
+                }
+            }
+        }
+
+        // Call our scheduling algorithm
+        let result = sched.schedule(is_tick);
+
+        // 2. Assert Invariants
+        if let Some((_old_sp, _new_sp)) = result {
+            // Invariant 1: If context switch occurred, the newly selected task MUST be in Running state
+            let next_idx = sched.current_partition_idx;
+            let next_tcb = sched.task_table[next_idx].as_ref().unwrap();
+            assert_eq!(next_tcb.state, TaskState::Running);
+        } else {
+            // Invariant 2: If we didn't switch, and there was a ready task, assert the current task is still running
+            if has_ready_task {
+                let current_tcb = sched.task_table[current_partition_idx].as_ref().unwrap();
+                assert!(
+                    current_tcb.state == TaskState::Running
+                        || current_tcb.state == TaskState::Ready
+                );
+            }
+        }
+    }
+}

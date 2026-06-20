@@ -3,6 +3,9 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
+    // Register custom cfg name for formal verification
+    println!("cargo::rustc-check-cfg=cfg(kani)");
+
     // Determine the build output directory
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 

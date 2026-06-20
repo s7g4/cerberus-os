@@ -29,6 +29,3 @@ codegen-units = 1
 [[bin]]
 name = "cerberus-os"
 harness = false
-
-[target.'cfg(kani)'.dependencies]
-kani = "0.45.0"
