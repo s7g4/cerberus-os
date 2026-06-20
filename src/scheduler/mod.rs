@@ -4,4 +4,4 @@ pub mod bitmap;
 pub mod tcb;
 
 pub use bitmap::BitMapScheduler;
-pub use tcb::{TaskControlBlock, TaskState};
+pub use tcb::{Capability, TaskControlBlock, TaskState};

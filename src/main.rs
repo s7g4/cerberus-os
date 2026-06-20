@@ -13,7 +13,7 @@ mod scheduler;
 mod security;
 mod trap;
 
-use scheduler::{BitMapScheduler, TaskControlBlock, TaskState};
+use scheduler::{BitMapScheduler, Capability, TaskControlBlock, TaskState};
 
 // Link the low-level assembly trap handler
 core::arch::global_asm!(include_str!("trap_entry.s"));
@@ -100,6 +100,7 @@ pub fn kmain() -> ! {
             active_priority: 0,
             state: TaskState::Ready,
             name: "Watchdog",
+            capabilities: [Capability::None; 8],
         });
 
         sched.register_task(TaskControlBlock {
@@ -108,6 +109,24 @@ pub fn kmain() -> ! {
             active_priority: 1,
             state: TaskState::Ready,
             name: "Task A",
+            capabilities: [
+                Capability::Mutex {
+                    mutex_idx: 0,
+                    can_lock: true,
+                    can_unlock: true,
+                },
+                Capability::Ipc {
+                    endpoint_idx: 0,
+                    can_send: true,
+                    can_recv: false,
+                },
+                Capability::None,
+                Capability::None,
+                Capability::None,
+                Capability::None,
+                Capability::None,
+                Capability::None,
+            ],
         });
 
         sched.register_task(TaskControlBlock {
@@ -116,6 +135,20 @@ pub fn kmain() -> ! {
             active_priority: 2,
             state: TaskState::Ready,
             name: "Task B",
+            capabilities: [
+                Capability::Ipc {
+                    endpoint_idx: 0,
+                    can_send: false,
+                    can_recv: true,
+                },
+                Capability::None,
+                Capability::None,
+                Capability::None,
+                Capability::None,
+                Capability::None,
+                Capability::None,
+                Capability::None,
+            ],
         });
 
         sched.register_task(TaskControlBlock {
@@ -124,6 +157,20 @@ pub fn kmain() -> ! {
             active_priority: 3,
             state: TaskState::Ready,
             name: "Task C",
+            capabilities: [
+                Capability::Mutex {
+                    mutex_idx: 0,
+                    can_lock: true,
+                    can_unlock: true,
+                },
+                Capability::None,
+                Capability::None,
+                Capability::None,
+                Capability::None,
+                Capability::None,
+                Capability::None,
+                Capability::None,
+            ],
         });
 
         // Configure timer tick interrupts
@@ -356,6 +403,44 @@ fn watchdog_checkin() {
     }
 }
 
+/// Syscall wrapper to send an IPC message (synchronous rendezvous).
+fn sys_send(cap_idx: usize, msg: &[u8]) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "li a7, 6",
+            "mv a0, {0}",
+            "mv a1, {1}",
+            "mv a2, {2}",
+            "ecall",
+            in(reg) cap_idx,
+            in(reg) msg.as_ptr() as usize,
+            in(reg) msg.len(),
+            lateout("a0") ret
+        );
+    }
+    ret
+}
+
+/// Syscall wrapper to receive an IPC message (synchronous rendezvous).
+fn sys_recv(cap_idx: usize, buf: &mut [u8]) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "li a7, 7",
+            "mv a0, {0}",
+            "mv a1, {1}",
+            "mv a2, {2}",
+            "ecall",
+            in(reg) cap_idx,
+            in(reg) buf.as_mut_ptr() as usize,
+            in(reg) buf.len(),
+            lateout("a0") ret
+        );
+    }
+    ret
+}
+
 /// Dedicated Watchdog Task (Highest Priority, Priority 0)
 extern "C" fn watchdog_task() -> ! {
     defmt::info!("Watchdog Task (Priority 0) started.");
@@ -457,6 +542,12 @@ extern "C" fn task_a() -> ! {
         unlock_mutex(0);
         defmt::info!("Task A (High) released Mutex 0.");
 
+        // Send a synchronous IPC message to Task B
+        let msg = [0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78];
+        defmt::info!("Task A sending IPC telemetry...");
+        let res = sys_send(1, &msg);
+        defmt::info!("Task A IPC send completed with status: {}", res);
+
         loop_count = loop_count.wrapping_add(1);
         if loop_count % 10 == 0 {
             kernel::dump_metrics();
@@ -469,8 +560,17 @@ extern "C" fn task_a() -> ! {
 /// Task B Entry point (Medium Priority)
 extern "C" fn task_b() -> ! {
     let mut loops = 0u32;
+    let mut rx_buf = [0u8; 8];
     loop {
-        defmt::info!("Task B (Medium) is active. Running heavy loop...");
+        defmt::info!("Task B (Medium) is active. Waiting for IPC telemetry...");
+
+        // Receive synchronous IPC message from Task A
+        let res = sys_recv(0, &mut rx_buf);
+        if res >= 0 {
+            defmt::info!("Task B received IPC payload: {:X}", rx_buf);
+        } else {
+            defmt::error!("Task B IPC receive failed: {}", res);
+        }
 
         // Simulating a hang after 5 successful loops
         if loops < 5 {
@@ -479,7 +579,7 @@ extern "C" fn task_b() -> ! {
             defmt::warn!("Task B (Medium) simulating software hang: stopping check-ins!");
         }
 
-        // Large compute loop. Without PIP, this would starve Task C and block Task A forever.
+        // Large compute loop
         for _ in 0..80_000 {
             unsafe { core::arch::asm!("nop") };
         }

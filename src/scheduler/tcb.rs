@@ -1,4 +1,27 @@
-//! Task Control Block (TCB) definitions.
+/// Capability tokens representing permissions to access resources.
+#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
+pub enum Capability {
+    /// No capability.
+    None,
+    /// Permission to access a global Mutex.
+    Mutex {
+        /// Index of the mutex in the global MUTEXES array.
+        mutex_idx: u8,
+        /// Permission to lock the mutex.
+        can_lock: bool,
+        /// Permission to unlock the mutex.
+        can_unlock: bool,
+    },
+    /// Permission to communicate over a synchronous IPC endpoint channel.
+    Ipc {
+        /// Index of the IPC channel/endpoint.
+        endpoint_idx: u8,
+        /// Permission to send messages.
+        can_send: bool,
+        /// Permission to receive messages.
+        can_recv: bool,
+    },
+}
 
 /// Task execution states.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
@@ -11,6 +34,18 @@ pub enum TaskState {
     Blocked { wake_tick: u32 },
     /// Suspended waiting for a mutex lock.
     BlockedOnMutex { mutex_idx: u8 },
+    /// Suspended waiting to send a message on an IPC endpoint (synchronous rendezvous).
+    BlockedOnIpcSend {
+        endpoint_idx: u8,
+        msg_addr: usize,
+        msg_len: usize,
+    },
+    /// Suspended waiting to receive a message on an IPC endpoint (synchronous rendezvous).
+    BlockedOnIpcRecv {
+        endpoint_idx: u8,
+        buf_addr: usize,
+        max_len: usize,
+    },
     /// Execution completed.
     Terminated,
 }
@@ -28,6 +63,8 @@ pub struct TaskControlBlock {
     pub state: TaskState,
     /// Debug name of the task.
     pub name: &'static str,
+    /// Capability table (C-List) representing local resource access tokens.
+    pub capabilities: [Capability; 8],
 }
 
 impl TaskControlBlock {
