@@ -197,3 +197,33 @@
   - Verifying build and testing simulated hang: 25m
 - **Metric Captured**:
   - Watchdog Thread Monitoring successfully verified. RTT logs confirm that the Watchdog Task monitored Task A and Task B health, and upon Task B's simulated hang (stopped checking in after 5 loops), the Watchdog successfully detected the timeout, dumped the metrics dashboard, and safe-parked the CPU in an infinite `wfi` loop.
+
+## Milestone 15 (Day 1) — ARINC 653 Time Partitioning
+- **Goal**: Replace the preemptive priority-based bitmap scheduler with a cyclic partition scheduler executing fixed Minor Frames (MIFs), and reprogram PMP stack sandboxing on partition swaps.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: Semicolon in `start_first_task()` inside `kmain()` caused a type mismatch compiler error. `kmain()` expects to return `!` (never return), but the trailing semicolon in the unsafe block forced a return type of `()`.
+    - *Fix*: Removed the trailing semicolon in `src/main.rs` to allow the naked assembly block to evaluate to `!` correctly.
+  - *Issue 2*: Priority Inheritance Protocol (PIP) was obsolete and caused redundant scheduling overhead, because in time partitioning, each partition has exactly one task slot.
+    - *Fix*: Removed PIP and simplified the Mutex Lock and Mutex Unlock syscall logic, reducing kernel complexity and execution overhead.
+- **Time Log**:
+  - Designing partition scheduling tables and cyclic state switcher: 1h
+  - Refactoring trap.rs and removing PIP logic: 45m
+  - Resolving compilation type errors in main.rs: 15m
+- **Metric Captured**:
+  - Cyclic partition scheduling successfully verified. Scheduler scaled to support 32 concurrent partitions.
+
+## Milestone 16 (Day 2) — Capability-Based Access Control & Zero-Copy IPC
+- **Goal**: Remove global resource IDs, enforce access checks using local Capability Lists (C-Lists) in the TCB, and implement synchronous zero-copy rendezvous IPC.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: Syscall 6 and 7 match branches were matched outside of the `ECALL_UMODE` match arm, leading to syntax errors and unresolved references to the stack `frame` pointer.
+    - *Fix*: Moved Syscall 6 and 7 inside the `match syscall_id` block under `ECALL_UMODE` (specifically right after Syscall 5 and before the wildcard `_ =>` arm).
+  - *Issue 2*: `sys_recv` wrapper in `main.rs` triggered a dead-code warning because the updated `task_b` code calling it was omitted during task entry updates.
+    - *Fix*: Updated `task_b` to call `sys_recv` and process incoming telemetry from `task_a`, resolving the dead-code warning.
+  - *Issue 3*: Blocked waiters on mutexes did not get their return code (`a0` register) updated upon unblocking, leaving dirty capability indexes.
+    - *Fix*: Explicitly wrote `0` (success) to the unblocked waiter's saved stack frame `a0` when transferring ownership, preventing registry leaks.
+- **Time Log**:
+  - Defining `Capability` and TCB C-Lists: 30m
+  - Writing `sys_send` and `sys_recv` rendezvous logic in trap handler: 1h
+  - Fixing match block nesting and dead code warnings: 45m
+- **Metric Captured**:
+  - Zero-copy synchronous IPC fully integrated. Defmt logs verify Task A sending telemetry payloads which are copied directly to Task B's stack frame in machine mode.

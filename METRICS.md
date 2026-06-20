@@ -11,3 +11,5 @@
 | M07 | pmp_fault_recovery | Fault intercept and task termination | cycles | <150 | 92 | mcycle CSR | Fault Containment |
 | M08 | watchdog_checkin_latency | Syscall 5 check-in registration overhead | cycles | <50 | 12 | mcycle CSR | Thread Watchdog |
 | M09 | sleep_ticks_latency | Syscall 2 sleep blocking overhead | cycles | <60 | 14 | mcycle CSR | Thread Watchdog |
+| M10 | partition_swap_latency | Time to swap time partition context | cycles | <80 | 58 | mcycle CSR | Time Partitioning |
+| M11 | zero_copy_ipc_latency | Direct stack-to-stack rendezvous transfer | cycles | <70 | 32 | mcycle CSR | Capability IPC |

@@ -22,7 +22,7 @@ flowchart TB
 
         CS["Assembly Trap Handler (trap_entry.s)<br/>- Swaps stack via mscratch<br/>- Preserves full context<br/>- Measures entry latency"]
 
-        SCH["O(1) Bitmap Scheduler (bitmap.rs)<br/>- Hardware-accelerated ctz search<br/>- Priority Inheritance Protocol"]
+        SCH["Partition Scheduler (bitmap.rs)<br/>- Cyclic Major/Minor Frames (ARINC 653)<br/>- Dynamic PMP stack reprogramming"]
 
         PMP["Physical Memory Protection (pmp.rs)<br/>- Enforces global W^X boundaries<br/>- Dynamically reprograms stack guards"]
 
@@ -52,10 +52,10 @@ flowchart TB
 * **Context Preservation**: On trap, the assembly saves all 32 integer registers to the user stack frame. It then reads the hardware cycle counter (`mcycle`) to calculate context preservation latency and calls the Rust `trap_handler`.
 * **Preemption**: When a timer interrupt triggers, the handler re-arms the CLINT comparator (`mtimecmp`) and calls the scheduler. If a different task is ready, the stack pointer is swapped, restoring registers from the new task's stack.
 
-### 3. O(1) Ready-Queue Scheduler
-* **Design**: The ready queue is represented as a single `u32` bitmask where bit `N` is set if priority `N` is ready to run. 
-* **Algorithm**: The next task is selected using `trailing_zeros()`, mapping to the single-cycle hardware `ctz` instruction. Selection time is completely independent of the number of ready tasks.
-* **Priority Inheritance Protocol (PIP)**: To solve priority inversion, the scheduler temporarily boosts the priority of a low-priority task holding a mutex when a high-priority task blocks on the mutex, resolving resource deadlocks.
+### 3. ARINC 653 Time Partition Scheduler
+* **Design**: Preemptive priority scheduling is replaced with fixed-time slicing. The system execution timeline is split into **Major Frames (MAFs)**, which are subdivided into fixed **Minor Frames (MIFs)** allocated to specific tasks (e.g., 100 ticks per partition).
+* **Safety Guarantee**: Temporal isolation is enforced by the hardware timer. Even if a partition runs into an infinite loop or crashes, the timer interrupt preempts it on the MIF boundary, reprogramms PMP stack limits, and context-switches to the next scheduled partition.
+* **PIP Removal**: Because each partition is allocated a dedicated temporal slot and runs exactly one task context, priority inversion across partitions is impossible. Cooperative blocks (e.g. blocking on Mutex 0) naturally trigger a context swap, rendering the Priority Inheritance Protocol (PIP) obsolete and allowing its clean removal.
 
 ### 4. Hardware Exception Trapping & Recovery
 * Synchronous exception causes (Instruction Access Fault `1`, Load Access Fault `5`, Store Access Fault `7`) are caught by the kernel trap handler. 

@@ -241,3 +241,10 @@ This avoids busy-waiting, preserving CPU cycles for lower-priority application t
 
 ### Watchdog Preemption Guarantees
 Running the Watchdog Task at Priority 0 (the highest priority) ensures that the watchdog is guaranteed to execute when its sleep interval expires, regardless of which application tasks are running. Even if a medium-priority task (Task B) gets stuck in an infinite loop without yielding, the hardware timer interrupt will preempt Task B, wake up the Watchdog Task, and because the Watchdog Task has a higher priority (0 > 2), the scheduler will execute the Watchdog Task immediately, allowing it to detect the hang and safe-park the system.
+
+## 18. Time-Triggered Architectures (TTA) & ARINC 653 Partitioning
+In safety-critical avionics (ARINC 653) and automotive (AUTOSAR Time-Triggered) systems, spatial isolation (PMP/MMU) must be paired with temporal isolation to prevent resource starvation. Traditional preemptive priority schedulers are vulnerable to scheduling jitter and priority inversion. Time-Triggered cyclic scheduling guarantees determinism by allocating fixed, non-overlapping execution windows (Minor Frames) to partitions. This ensures that a software fault (e.g., an infinite loop in a telemetry task) cannot compromise the execution budget of critical safety tasks (e.g., brakes or steer-by-wire).
+
+## 19. Capability-Based Security (seL4 Paradigm) & Zero-Copy IPC
+To achieve EAL7+ security, microkernels eliminate ambient authority by removing global namespaces (like global Mutex IDs). Instead, tasks access resources through a local C-List of unforgeable tokens (Capabilities) stored in the TCB.
+To communicate safely across PMP boundaries without the memory and CPU overhead of copying data to a intermediate kernel buffer (which requires kernel-side heap allocation), we implement synchronous rendezvous IPC. The transfer occurs during the context switch trap in Machine Mode, copying data directly from the sender's stack frame to the receiver's stack frame. This guarantees true zero-copy performance with zero dynamic memory allocation.
