@@ -16,6 +16,7 @@ mod trap;
 use scheduler::{BitMapScheduler, Capability, TaskControlBlock, TaskState};
 
 // Link the low-level assembly trap handler
+#[cfg(not(kani))]
 core::arch::global_asm!(include_str!("trap_entry.s"));
 
 extern "C" {
@@ -346,15 +347,23 @@ unsafe fn init_memory_protection() {
 /// Assembly cycle probe helper.
 #[inline(always)]
 fn read_cycles() -> u32 {
-    let cycles: u32;
-    unsafe {
-        core::arch::asm!("csrr {0}, mcycle", out(reg) cycles);
+    #[cfg(not(kani))]
+    {
+        let cycles: u32;
+        unsafe {
+            core::arch::asm!("csrr {0}, mcycle", out(reg) cycles);
+        }
+        cycles
     }
-    cycles
+    #[cfg(kani)]
+    {
+        0
+    }
 }
 
 /// Syscall wrapper to trigger cooperative yields from User Mode.
 fn yield_now() {
+    #[cfg(not(kani))]
     unsafe {
         core::arch::asm!("li a7, 1", "ecall");
     }
@@ -362,6 +371,7 @@ fn yield_now() {
 
 /// Syscall wrapper to sleep for a specific number of ticks.
 fn sleep_ticks(ticks: usize) {
+    #[cfg(not(kani))]
     unsafe {
         core::arch::asm!(
             "li a7, 2",
@@ -374,6 +384,7 @@ fn sleep_ticks(ticks: usize) {
 
 /// Syscall wrapper to lock a Mutex.
 fn lock_mutex(idx: usize) {
+    #[cfg(not(kani))]
     unsafe {
         core::arch::asm!(
             "li a7, 3",
@@ -386,6 +397,7 @@ fn lock_mutex(idx: usize) {
 
 /// Syscall wrapper to unlock a Mutex.
 fn unlock_mutex(idx: usize) {
+    #[cfg(not(kani))]
     unsafe {
         core::arch::asm!(
             "li a7, 4",
@@ -398,6 +410,7 @@ fn unlock_mutex(idx: usize) {
 
 /// Syscall wrapper to check in with the Watchdog.
 fn watchdog_checkin() {
+    #[cfg(not(kani))]
     unsafe {
         core::arch::asm!("li a7, 5", "ecall");
     }
@@ -405,40 +418,54 @@ fn watchdog_checkin() {
 
 /// Syscall wrapper to send an IPC message (synchronous rendezvous).
 fn sys_send(cap_idx: usize, msg: &[u8]) -> isize {
-    let ret: isize;
-    unsafe {
-        core::arch::asm!(
-            "li a7, 6",
-            "mv a0, {0}",
-            "mv a1, {1}",
-            "mv a2, {2}",
-            "ecall",
-            in(reg) cap_idx,
-            in(reg) msg.as_ptr() as usize,
-            in(reg) msg.len(),
-            lateout("a0") ret
-        );
+    #[cfg(not(kani))]
+    {
+        let ret: isize;
+        unsafe {
+            core::arch::asm!(
+                "li a7, 6",
+                "mv a0, {0}",
+                "mv a1, {1}",
+                "mv a2, {2}",
+                "ecall",
+                in(reg) cap_idx,
+                in(reg) msg.as_ptr() as usize,
+                in(reg) msg.len(),
+                lateout("a0") ret
+            );
+        }
+        ret
     }
-    ret
+    #[cfg(kani)]
+    {
+        0
+    }
 }
 
 /// Syscall wrapper to receive an IPC message (synchronous rendezvous).
 fn sys_recv(cap_idx: usize, buf: &mut [u8]) -> isize {
-    let ret: isize;
-    unsafe {
-        core::arch::asm!(
-            "li a7, 7",
-            "mv a0, {0}",
-            "mv a1, {1}",
-            "mv a2, {2}",
-            "ecall",
-            in(reg) cap_idx,
-            in(reg) buf.as_mut_ptr() as usize,
-            in(reg) buf.len(),
-            lateout("a0") ret
-        );
+    #[cfg(not(kani))]
+    {
+        let ret: isize;
+        unsafe {
+            core::arch::asm!(
+                "li a7, 7",
+                "mv a0, {0}",
+                "mv a1, {1}",
+                "mv a2, {2}",
+                "ecall",
+                in(reg) cap_idx,
+                in(reg) buf.as_mut_ptr() as usize,
+                in(reg) buf.len(),
+                lateout("a0") ret
+            );
+        }
+        ret
     }
-    ret
+    #[cfg(kani)]
+    {
+        0
+    }
 }
 
 /// Dedicated Watchdog Task (Highest Priority, Priority 0)
@@ -618,20 +645,24 @@ extern "C" fn task_c() -> ! {
 
 /// Configure the Machine-mode Timer.
 unsafe fn init_timer() {
-    let clint_mtime = 0x0200_BFF8 as *const u64;
-    let clint_mtimecmp = 0x0200_4000 as *mut u64;
-    clint_mtimecmp.write_volatile(clint_mtime.read_volatile() + 40_000);
+    #[cfg(not(kani))]
+    {
+        let clint_mtime = 0x0200_BFF8 as *const u64;
+        let clint_mtimecmp = 0x0200_4000 as *mut u64;
+        clint_mtimecmp.write_volatile(clint_mtime.read_volatile() + 40_000);
 
-    let mie: usize;
-    core::arch::asm!("csrr {}, mie", out(reg) mie);
-    core::arch::asm!("csrw mie, {}", in(reg) mie | (1 << 7));
+        let mie: usize;
+        core::arch::asm!("csrr {}, mie", out(reg) mie);
+        core::arch::asm!("csrw mie, {}", in(reg) mie | (1 << 7));
 
-    let mstatus: usize;
-    core::arch::asm!("csrr {}, mstatus", out(reg) mstatus);
-    core::arch::asm!("csrw mstatus, {}", in(reg) mstatus | (1 << 3));
+        let mstatus: usize;
+        core::arch::asm!("csrr {}, mstatus", out(reg) mstatus);
+        core::arch::asm!("csrw mstatus, {}", in(reg) mstatus | (1 << 3));
+    }
 }
 
 /// Global panic handler for bare-metal execution.
+#[cfg(not(kani))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     defmt::error!("CRITICAL: Kernel Panic.");

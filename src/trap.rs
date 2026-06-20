@@ -18,9 +18,18 @@ pub static mut LAST_CHECKIN_TICK: [u32; 32] = [0; 32];
 #[no_mangle]
 pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle: usize) -> usize {
     // Measure context-saving execution latency
-    let end_cycle: usize;
-    core::arch::asm!("csrr {}, mcycle", out(reg) end_cycle);
-    let elapsed = end_cycle.wrapping_sub(start_cycle) as u32;
+    let elapsed = {
+        #[cfg(not(kani))]
+        {
+            let end_cycle: usize;
+            core::arch::asm!("csrr {}, mcycle", out(reg) end_cycle);
+            end_cycle.wrapping_sub(start_cycle) as u32
+        }
+        #[cfg(kani)]
+        {
+            0
+        }
+    };
     METRIC_TRAP_LATENCY_CYCLES.store(elapsed, Ordering::Relaxed);
 
     const TIMER_INTERRUPT: usize = (1 << 31) | 7; // Machine-mode timer interrupt

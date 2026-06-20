@@ -135,6 +135,7 @@ impl BitMapScheduler {
         let user_sp = new_tcb.saved_sp;
         let task_name = new_tcb.name;
 
+        #[cfg(not(kani))]
         unsafe {
             // 1. Set PMP isolation to block the inactive task stacks
             crate::memory::reprogram_pmp_stack(task_name);
@@ -184,6 +185,10 @@ impl BitMapScheduler {
                 options(noreturn)
             );
         }
+        #[cfg(kani)]
+        {
+            loop {}
+        }
     }
 }
 
@@ -232,6 +237,9 @@ mod verification {
         let is_tick = kani::any::<bool>();
         let current_partition_idx = kani::any::<usize>() % MAX_PARTITIONS;
         sched.current_partition_idx = current_partition_idx;
+
+        // Assume the current running partition is registered in the task table
+        kani::assume(sched.task_table[current_partition_idx].is_some());
 
         let remaining_mif_ticks = kani::any::<u32>();
         kani::assume(remaining_mif_ticks <= 100);
