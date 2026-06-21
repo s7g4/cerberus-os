@@ -241,3 +241,21 @@
   - Resolving Cargo dependency and unexpected cfg warnings: 20m
 - **Metric Captured**:
   - Verification harness passed. Mathematically proved that the cyclic scheduler will never schedule a blocked task and will always find a ready task if one exists.
+
+## Milestone 18 — Multi-Core SMP Emulation
+- **Goal**: Configure a dual-hart RISC-V platform, establish per-core schedulers, protect shared global states with CAS spinlocks, and handle cross-core task wakeups via CLINT IPI signaling.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: Indexing a global `static mut SCHEDULERS` array using a runtime-derived `hart_id` in `trap.rs` mutably borrowed the entire array, triggering Rust borrow checker errors when accessing other indices for waiter priorities or cross-core tasks.
+    - *Fix*: Pattern-matched the global array slice into distinct, non-overlapping mutable references (`let [ref mut sched0, ref mut sched1] = *scheds;`) and accessed the local and remote schedulers separately.
+  - *Issue 2*: Linker failed with undefined symbol `MUTEX_LOCK` when compiling the kernel binary.
+    - *Fix*: Added `#[no_mangle]` to the definition of `MUTEX_LOCK` in `src/main.rs` to allow the extern declaration in `src/trap.rs` to resolve correctly.
+  - *Issue 3*: Clippy flagged a missing `Default` implementation on `Spinlock` because of `new()`.
+    - *Fix*: Implemented `Default` by delegating to `new()`.
+  - *Issue 4*: Clippy flagged an identical `if`/`else` branch in Syscall 5 (`checkin_slot` assignment).
+    - *Fix*: Simplified to `let checkin_slot = running_idx;`.
+- **Time Log**:
+  - Refactoring global schedulers to support dual-hart: 45m
+  - Resolving borrow-checker conflicts using array destructuring: 30m
+  - Fixing linker symbol errors: 10m
+- **Metric Captured**:
+  - Multi-core SMP boot and scheduling compiles successfully. Per-core runqueues and spinlock protection fully validated.

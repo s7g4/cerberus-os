@@ -1,5 +1,7 @@
 //! O(1) Bitmap Priority Scheduler.
 
+#![allow(unused_variables)]
+
 use crate::scheduler::tcb::{TaskControlBlock, TaskState};
 
 pub const MAX_PARTITIONS: usize = 32;
@@ -112,7 +114,7 @@ impl BitMapScheduler {
     }
 
     /// Bootstraps the stack pointer and registers to launch the first partition.
-    pub fn start_first_task(&mut self) -> ! {
+    pub fn start_first_task(&mut self, hart_id: usize) -> ! {
         let mut first_idx = 0;
         let mut found = false;
         for i in 0..MAX_PARTITIONS {
@@ -141,7 +143,11 @@ impl BitMapScheduler {
             crate::memory::reprogram_pmp_stack(task_name);
 
             // 2. Point mscratch to the top of our dedicated Kernel Stack
-            let kernel_stack_top = core::ptr::addr_of_mut!(crate::KERNEL_STACK) as usize + 1024;
+            let kernel_stack_top = if hart_id == 0 {
+                core::ptr::addr_of_mut!(crate::KERNEL_STACK_0) as usize + 1024
+            } else {
+                core::ptr::addr_of_mut!(crate::KERNEL_STACK_1) as usize + 1024
+            };
             core::arch::asm!("csrw mscratch, {}", in(reg) kernel_stack_top);
 
             // 3. Load user stack pointer, restore U-mode registers, and execute mret

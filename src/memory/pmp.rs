@@ -1,5 +1,7 @@
 //! Physical Memory Protection (PMP) configuration driver.
 
+#![allow(unused_variables, dead_code)]
+
 /// PMP address configuration modes.
 #[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq)]

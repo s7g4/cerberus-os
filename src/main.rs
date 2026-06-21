@@ -3,6 +3,7 @@
 #![no_std]
 #![no_main]
 #![feature(naked_functions)]
+#![allow(unused_variables, dead_code, stable_features)]
 
 use defmt_rtt as _;
 
@@ -23,9 +24,11 @@ extern "C" {
     fn _trap_entry();
 }
 
-// Global scheduler instance
+use core::sync::atomic::{AtomicBool, Ordering};
+
+// Global schedulers instance (per core)
 #[no_mangle]
-pub static mut SCHEDULER: BitMapScheduler = BitMapScheduler::new();
+pub static mut SCHEDULERS: [BitMapScheduler; 2] = [BitMapScheduler::new(), BitMapScheduler::new()];
 
 // Static buffers for task stacks (allocated statically, no heap)
 pub static mut TASK_A_STACK: [u8; 1024] = [0; 1024];
@@ -33,8 +36,14 @@ pub static mut TASK_B_STACK: [u8; 1024] = [0; 1024];
 pub static mut TASK_C_STACK: [u8; 1024] = [0; 1024];
 pub static mut TASK_WD_STACK: [u8; 1024] = [0; 1024];
 
-// Dedicated Kernel Interrupt Stack (M-mode execution)
-pub static mut KERNEL_STACK: [u8; 1024] = [0; 1024];
+// Dedicated Kernel Interrupt Stacks (M-mode execution per core)
+pub static mut KERNEL_STACK_0: [u8; 1024] = [0; 1024];
+pub static mut KERNEL_STACK_1: [u8; 1024] = [0; 1024];
+
+// Synchronization primitives for SMP execution
+pub static BOOT_BARRIER: AtomicBool = AtomicBool::new(false);
+#[no_mangle]
+pub static MUTEX_LOCK: kernel::Spinlock = kernel::Spinlock::new();
 
 // Kernel Mutex representation
 pub struct KernelMutex {
@@ -67,120 +76,161 @@ fn main() -> ! {
 
 /// Core kernel entry routine.
 pub fn kmain() -> ! {
-    defmt::info!("Booting Cerberus-OS kernel...");
-
+    let hart_id: usize;
     unsafe {
-        // Point the Machine Trap Vector (mtvec) register to the assembly entry.
-        let trap_addr = _trap_entry as usize;
-        core::arch::asm!("csrw mtvec, {}", in(reg) trap_addr);
+        core::arch::asm!("csrr {}, mhartid", out(reg) hart_id);
+    }
 
-        // Initialize PMP boundaries (Priority Masking sandboxing rules)
-        init_memory_protection();
+    if hart_id == 0 {
+        defmt::info!("Booting Cerberus-OS kernel on Core 0...");
 
-        // Run cryptographic CAN stack self-test on boot
-        verify_network_and_security();
+        unsafe {
+            // Point the Machine Trap Vector (mtvec) register to the assembly entry.
+            let trap_addr = _trap_entry as *const () as usize;
+            core::arch::asm!("csrw mtvec, {}", in(reg) trap_addr);
 
-        // Initialize task contexts on their respective stacks
-        let sp_wd = TaskControlBlock::initialize_stack(
-            &mut *core::ptr::addr_of_mut!(TASK_WD_STACK),
-            watchdog_task,
-        );
-        let sp_a =
-            TaskControlBlock::initialize_stack(&mut *core::ptr::addr_of_mut!(TASK_A_STACK), task_a);
-        let sp_b =
-            TaskControlBlock::initialize_stack(&mut *core::ptr::addr_of_mut!(TASK_B_STACK), task_b);
-        let sp_c =
-            TaskControlBlock::initialize_stack(&mut *core::ptr::addr_of_mut!(TASK_C_STACK), task_c);
+            // Initialize PMP boundaries (Priority Masking sandboxing rules)
+            init_memory_protection();
 
-        let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+            // Run cryptographic CAN stack self-test on boot
+            verify_network_and_security();
 
-        // Register tasks inside the scheduler
-        sched.register_task(TaskControlBlock {
-            saved_sp: sp_wd,
-            priority: 0, // Watchdog has highest priority
-            active_priority: 0,
-            state: TaskState::Ready,
-            name: "Watchdog",
-            capabilities: [Capability::None; 8],
-        });
+            // Initialize task contexts on their respective stacks
+            let sp_wd = TaskControlBlock::initialize_stack(
+                &mut *core::ptr::addr_of_mut!(TASK_WD_STACK),
+                watchdog_task,
+            );
+            let sp_a = TaskControlBlock::initialize_stack(
+                &mut *core::ptr::addr_of_mut!(TASK_A_STACK),
+                task_a,
+            );
+            let sp_b = TaskControlBlock::initialize_stack(
+                &mut *core::ptr::addr_of_mut!(TASK_B_STACK),
+                task_b,
+            );
+            let sp_c = TaskControlBlock::initialize_stack(
+                &mut *core::ptr::addr_of_mut!(TASK_C_STACK),
+                task_c,
+            );
 
-        sched.register_task(TaskControlBlock {
-            saved_sp: sp_a,
-            priority: 1, // High priority
-            active_priority: 1,
-            state: TaskState::Ready,
-            name: "Task A",
-            capabilities: [
-                Capability::Mutex {
-                    mutex_idx: 0,
-                    can_lock: true,
-                    can_unlock: true,
-                },
-                Capability::Ipc {
-                    endpoint_idx: 0,
-                    can_send: true,
-                    can_recv: false,
-                },
-                Capability::None,
-                Capability::None,
-                Capability::None,
-                Capability::None,
-                Capability::None,
-                Capability::None,
-            ],
-        });
+            let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
 
-        sched.register_task(TaskControlBlock {
-            saved_sp: sp_b,
-            priority: 2, // Medium priority
-            active_priority: 2,
-            state: TaskState::Ready,
-            name: "Task B",
-            capabilities: [
-                Capability::Ipc {
-                    endpoint_idx: 0,
-                    can_send: false,
-                    can_recv: true,
-                },
-                Capability::None,
-                Capability::None,
-                Capability::None,
-                Capability::None,
-                Capability::None,
-                Capability::None,
-                Capability::None,
-            ],
-        });
+            // Core 0 Scheduler registration (Watchdog + Task A)
+            scheds[0].register_task(TaskControlBlock {
+                saved_sp: sp_wd,
+                priority: 0,
+                active_priority: 0,
+                state: TaskState::Ready,
+                name: "Watchdog",
+                capabilities: [Capability::None; 8],
+            });
 
-        sched.register_task(TaskControlBlock {
-            saved_sp: sp_c,
-            priority: 3, // Low priority
-            active_priority: 3,
-            state: TaskState::Ready,
-            name: "Task C",
-            capabilities: [
-                Capability::Mutex {
-                    mutex_idx: 0,
-                    can_lock: true,
-                    can_unlock: true,
-                },
-                Capability::None,
-                Capability::None,
-                Capability::None,
-                Capability::None,
-                Capability::None,
-                Capability::None,
-                Capability::None,
-            ],
-        });
+            scheds[0].register_task(TaskControlBlock {
+                saved_sp: sp_a,
+                priority: 1,
+                active_priority: 1,
+                state: TaskState::Ready,
+                name: "Task A",
+                capabilities: [
+                    Capability::Mutex {
+                        mutex_idx: 0,
+                        can_lock: true,
+                        can_unlock: true,
+                    },
+                    Capability::Ipc {
+                        endpoint_idx: 0,
+                        can_send: true,
+                        can_recv: false,
+                    },
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                ],
+            });
 
-        // Configure timer tick interrupts
-        init_timer();
+            // Core 1 Scheduler registration (Task B + Task C)
+            scheds[1].register_task(TaskControlBlock {
+                saved_sp: sp_b,
+                priority: 2,
+                active_priority: 2,
+                state: TaskState::Ready,
+                name: "Task B",
+                capabilities: [
+                    Capability::Ipc {
+                        endpoint_idx: 0,
+                        can_send: false,
+                        can_recv: true,
+                    },
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                ],
+            });
 
-        defmt::info!("Heartbeat timer armed. Launching first task...");
+            scheds[1].register_task(TaskControlBlock {
+                saved_sp: sp_c,
+                priority: 3,
+                active_priority: 3,
+                state: TaskState::Ready,
+                name: "Task C",
+                capabilities: [
+                    Capability::Mutex {
+                        mutex_idx: 0,
+                        can_lock: true,
+                        can_unlock: true,
+                    },
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                ],
+            });
 
-        // Start execution of the highest priority task
-        sched.start_first_task();
+            // Configure timer tick interrupts
+            init_timer();
+
+            defmt::info!("Core 0: Heartbeat timer armed. Releasing Core 1...");
+
+            // Release Core 1 boot barrier
+            BOOT_BARRIER.store(true, Ordering::Release);
+
+            // Start Core 0 scheduler execution
+            scheds[0].start_first_task(0);
+        }
+    } else {
+        // Core 1 (Secondary Hart) boot path
+        // Spin-wait until Core 0 completes basic initialization
+        while !BOOT_BARRIER.load(Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+
+        unsafe {
+            // Set Core 1 trap handler
+            let trap_addr = _trap_entry as *const () as usize;
+            core::arch::asm!("csrw mtvec, {}", in(reg) trap_addr);
+
+            // Initialize local Core 1 memory protection
+            init_memory_protection();
+
+            // Initialize local Core 1 timer
+            init_timer();
+
+            defmt::info!("Core 1: Booted and timer armed. Launching scheduler...");
+
+            // Start Core 1 scheduler execution
+            let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
+            scheds[1].start_first_task(1);
+        }
     }
 }
 
@@ -490,15 +540,16 @@ extern "C" fn watchdog_task() -> ! {
 
         // Check health of monitored ready/running tasks
         extern "Rust" {
-            static mut SCHEDULER: crate::scheduler::bitmap::BitMapScheduler;
+            static mut SCHEDULERS: [crate::scheduler::bitmap::BitMapScheduler; 2];
         }
-        let sched = unsafe { &mut *core::ptr::addr_of_mut!(SCHEDULER) };
+
+        let scheds = unsafe { &mut *core::ptr::addr_of_mut!(SCHEDULERS) };
 
         let mut check_failed = false;
         let mut failed_task = "";
 
         // Check Task A (prio 1)
-        if let Some(tcb) = &sched.task_table[1] {
+        if let Some(tcb) = &scheds[0].task_table[1] {
             if tcb.state != TaskState::Terminated {
                 let last_checkin =
                     unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[1] };
@@ -511,7 +562,7 @@ extern "C" fn watchdog_task() -> ! {
         }
 
         // Check Task B (prio 2)
-        if let Some(tcb) = &sched.task_table[2] {
+        if let Some(tcb) = &scheds[1].task_table[2] {
             if tcb.state != TaskState::Terminated {
                 let last_checkin =
                     unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[2] };
