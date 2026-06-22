@@ -18,8 +18,7 @@ flash: Memory.MappedMemory @ sysbus 0x42000000
 
 clint: IRQControllers.CoreLevelInterruptor @ sysbus 0x02000000
     frequency: 10000000
-    [cpu0, cpu1] ->
-        0 -> cpu0@3    // machine software interrupt
-        1 -> cpu0@7    // machine timer interrupt
-        2 -> cpu1@3    // machine software interrupt
-        3 -> cpu1@7    // machine timer interrupt
+    numberOfTargets: 2
+    [0, 1] -> cpu0@[3, 7]
+    [2, 3] -> cpu1@[3, 7]
+
