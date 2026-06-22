@@ -1,31 +1,35 @@
-[package]
-name = "cerberus-os"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+resolver = "2"
+members = [
+    "kernel",
+    "scheduler",
+    "security",
+    "network",
+    "telemetry",
+    "benchmarks"
+]
+default-members = [
+    "kernel",
+    "scheduler",
+    "security",
+    "network",
+    "telemetry"
+]
 
-[dependencies]
-defmt = "0.3.8"
-defmt-rtt = "0.4.1"
-riscv = { version = "0.11.1", features = ["critical-section-single-hart"] }
-riscv-rt = "0.12.0"
-sha2 = { version = "0.10.8", default-features = false }
-
-[features]
-default = []
-host-testing = []
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [profile.dev]
 opt-level = "z"
 debug = true
 lto = true
 codegen-units = 1
+panic = "abort"
 
 [profile.release]
 opt-level = "z"
 debug = true
 lto = true
 codegen-units = 1
+panic = "abort"
 
-[[bin]]
-name = "cerberus-os"
-harness = false

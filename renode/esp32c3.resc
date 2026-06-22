@@ -1,0 +1,17 @@
+# esp32c3.resc - Renode script for Cerberus-OS execution
+
+# Create the emulation machine
+mach create
+machine LoadPlatformDescription @renode/esp32c3.repl
+
+# Load the bare-metal kernel ELF binary
+sysbus LoadELF @target/riscv32imac-unknown-none-elf/release/cerberus-os
+
+# Create a virtual console for SEGGER RTT output
+machine CreateVirtualConsole "segger_rtt"
+
+# Include the standard Renode SEGGER RTT helper script
+include @scripts/single-node/segger-rtt.py
+
+# Setup and link the SEGGER RTT console to memory
+setup_segger_rtt sysbus.segger_rtt

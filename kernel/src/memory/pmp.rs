@@ -64,6 +64,7 @@ pub unsafe fn configure_pmp(entry: usize, base_addr: usize, size: usize, config:
             2 => core::arch::asm!("csrw pmpaddr2, {}", in(reg) napot_val),
             3 => core::arch::asm!("csrw pmpaddr3, {}", in(reg) napot_val),
             4 => core::arch::asm!("csrw pmpaddr4, {}", in(reg) napot_val),
+            5 => core::arch::asm!("csrw pmpaddr5, {}", in(reg) napot_val),
             _ => panic!("Unsupported PMP entry index"),
         }
 

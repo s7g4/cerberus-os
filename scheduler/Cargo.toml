@@ -1,0 +1,15 @@
+[package]
+name = "scheduler"
+version = "0.1.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+
+[dependencies]
+defmt = { version = "0.3.8", optional = true }
+
+[features]
+default = ["use-defmt"]
+use-defmt = ["dep:defmt"]

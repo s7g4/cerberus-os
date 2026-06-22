@@ -1,0 +1,25 @@
+// esp32c3.repl - Renode platform definition for Cerberus-OS
+
+cpu0: CPU.RiscV32 @ sysbus
+    cpuType: "rv32imac"
+    privilegeArchitecture: PrivilegeArchitecture.Priv1_11
+    hartId: 0
+
+cpu1: CPU.RiscV32 @ sysbus
+    cpuType: "rv32imac"
+    privilegeArchitecture: PrivilegeArchitecture.Priv1_11
+    hartId: 1
+
+sram: Memory.MappedMemory @ sysbus 0x3FC80000
+    size: 0x00052000 // 328 KB
+
+flash: Memory.MappedMemory @ sysbus 0x42000000
+    size: 0x00400000 // 4 MB
+
+clint: IRQControllers.CoreLevelInterruptor @ sysbus 0x02000000
+    frequency: 10000000
+    [cpu0, cpu1] ->
+        0 -> cpu0@3    // machine software interrupt
+        1 -> cpu0@7    // machine timer interrupt
+        2 -> cpu1@3    // machine software interrupt
+        3 -> cpu1@7    // machine timer interrupt

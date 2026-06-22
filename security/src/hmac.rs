@@ -1,6 +1,7 @@
 //! HMAC-SHA256 message authentication for CAN frames.
 
-use crate::network::can::CanFrame;
+use network::can::CanFrame;
+use telemetry::syscalls::{sys_recv, sys_send};
 
 pub const HMAC_TAG_LEN: usize = 8;
 
@@ -22,13 +23,13 @@ pub fn verify_frame_secure(auth: &AuthFrame, hsm_send_cap: usize, hsm_recv_cap: 
     };
 
     // Send frame to HSM for signing
-    if crate::sys_send(hsm_send_cap, frame_bytes) < 0 {
+    if sys_send(hsm_send_cap, frame_bytes) < 0 {
         return false;
     }
 
     // Receive computed signature tag back from HSM
     let mut expected = [0u8; HMAC_TAG_LEN];
-    if crate::sys_recv(hsm_recv_cap, &mut expected) < 0 {
+    if sys_recv(hsm_recv_cap, &mut expected) < 0 {
         return false;
     }
 
@@ -39,3 +40,4 @@ pub fn verify_frame_secure(auth: &AuthFrame, hsm_send_cap: usize, hsm_recv_cap: 
         .fold(0u8, |acc, (a, b)| acc | (a ^ b))
         == 0
 }
+

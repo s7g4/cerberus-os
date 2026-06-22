@@ -2,8 +2,9 @@
 //!
 //! Stores private cryptographic keys and processes HMAC signing requests in U-mode.
 
-use crate::network::can::CanFrame;
+use network::can::CanFrame;
 use sha2::{Digest, Sha256};
+use telemetry::syscalls::{sys_recv, sys_send};
 
 /// The private HMAC key, strictly isolated inside the HSM partition.
 const HMAC_KEY: &[u8; 32] = b"cerberus-os-dev-key-not-for-prod";
@@ -46,7 +47,7 @@ pub extern "C" fn hsm_task() -> ! {
 
     loop {
         // Wait for an IPC request on endpoint 2 (receives a CanFrame to sign)
-        let res = crate::sys_recv(2, &mut req_buf);
+        let res = sys_recv(2, &mut req_buf);
         if res == core::mem::size_of::<CanFrame>() as isize {
             // Reconstruct the CanFrame from raw bytes safely
             let frame: CanFrame =
@@ -56,7 +57,7 @@ pub extern "C" fn hsm_task() -> ! {
             let tag = compute_hmac_local(&frame);
 
             // Send the computed signature tag back to endpoint 3
-            let send_res = crate::sys_send(3, &tag);
+            let send_res = sys_send(3, &tag);
             if send_res < 0 {
                 defmt::error!(
                     "HSM Partition: Failed to send signature response: {}",
@@ -71,3 +72,4 @@ pub extern "C" fn hsm_task() -> ! {
         }
     }
 }
+

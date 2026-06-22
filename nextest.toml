@@ -1,0 +1,13 @@
+# nextest.toml configuration for Cerberus-OS workspace
+
+[profile.default]
+# Run all tests, don't stop on the first failure
+fail-fast = false
+# Auto-detect number of threads
+threads = "num-cpus"
+
+[profile.ci]
+# Stop on first failure in CI to save resources
+fail-fast = true
+# Retry flaky tests up to 2 times
+retries = 2

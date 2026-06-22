@@ -9,12 +9,10 @@ use defmt_rtt as _;
 
 mod kernel;
 mod memory;
-mod network;
-mod scheduler;
-mod security;
 mod trap;
 
 use scheduler::{BitMapScheduler, Capability, TaskControlBlock, TaskState};
+
 
 // Link the low-level assembly trap handler
 #[cfg(not(kani))]
@@ -69,6 +67,95 @@ pub static mut MUTEXES: [Option<KernelMutex>; 8] = [
     None,
     None,
 ];
+
+pub trait StartFirstTaskExt {
+    fn start_first_task(&mut self, hart_id: usize) -> !;
+}
+
+impl StartFirstTaskExt for BitMapScheduler {
+    fn start_first_task(&mut self, hart_id: usize) -> ! {
+        let mut first_idx = 0;
+        let mut found = false;
+        for i in 0..scheduler::bitmap::MAX_PARTITIONS {
+            if let Some(tcb) = &self.task_table[i] {
+                if tcb.state == TaskState::Ready {
+                    first_idx = i;
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "No ready tasks registered at boot");
+
+        self.current_partition_idx = first_idx;
+        self.remaining_mif_ticks = self.partition_durations[first_idx];
+
+        let new_tcb = self.task_table[first_idx].as_mut().unwrap();
+        new_tcb.state = TaskState::Running;
+
+        let user_sp = new_tcb.saved_sp;
+        let task_name = new_tcb.name;
+
+        #[cfg(not(kani))]
+        unsafe {
+            // 1. Set PMP isolation to block the inactive task stacks
+            crate::memory::reprogram_pmp_stack(task_name);
+
+            // 2. Point mscratch to the top of our dedicated Kernel Stack
+            let kernel_stack_top = if hart_id == 0 {
+                core::ptr::addr_of_mut!(crate::KERNEL_STACK_0) as usize + 1024
+            } else {
+                core::ptr::addr_of_mut!(crate::KERNEL_STACK_1) as usize + 1024
+            };
+            core::arch::asm!("csrw mscratch, {}", in(reg) kernel_stack_top);
+
+            // 3. Load user stack pointer, restore U-mode registers, and execute mret
+            core::arch::asm!(
+                "mv sp, {0}",
+                "lw t0, 112(sp)",
+                "csrw mepc, t0",
+                "lw t1, 116(sp)",
+                "csrw mstatus, t1",
+                "lw ra, 0(sp)",
+                "lw t0, 4(sp)",
+                "lw t1, 8(sp)",
+                "lw t2, 12(sp)",
+                "lw s0, 16(sp)",
+                "lw s1, 20(sp)",
+                "lw a0, 24(sp)",
+                "lw a1, 28(sp)",
+                "lw a2, 32(sp)",
+                "lw a3, 36(sp)",
+                "lw a4, 40(sp)",
+                "lw a5, 44(sp)",
+                "lw a6, 48(sp)",
+                "lw a7, 52(sp)",
+                "lw s2, 56(sp)",
+                "lw s3, 60(sp)",
+                "lw s4, 64(sp)",
+                "lw s5, 68(sp)",
+                "lw s6, 72(sp)",
+                "lw s7, 76(sp)",
+                "lw s8, 80(sp)",
+                "lw s9, 84(sp)",
+                "lw s10, 88(sp)",
+                "lw s11, 92(sp)",
+                "lw t3, 96(sp)",
+                "lw t4, 100(sp)",
+                "lw t5, 104(sp)",
+                "lw t6, 108(sp)",
+                "addi sp, sp, 128",
+                "mret",
+                in(reg) user_sp,
+                options(noreturn)
+            );
+        }
+        #[cfg(kani)]
+        {
+            loop {}
+        }
+    }
+}
 
 #[riscv_rt::entry]
 fn main() -> ! {
@@ -595,7 +682,7 @@ extern "C" fn watchdog_task() -> ! {
 
         // Check health of monitored ready/running tasks
         extern "Rust" {
-            static mut SCHEDULERS: [crate::scheduler::bitmap::BitMapScheduler; 2];
+            static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
         }
 
         let scheds = unsafe { &mut *core::ptr::addr_of_mut!(SCHEDULERS) };
@@ -828,7 +915,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
             location.column()
         );
     }
-    defmt::error!("Details: {}", defmt::Debug2Format(info));
+    // details printing is omitted to save code space and keep within the 32 KB limit.
     loop {
         unsafe { core::arch::asm!("wfi") };
     }

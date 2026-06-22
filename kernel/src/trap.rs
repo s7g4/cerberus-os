@@ -69,16 +69,16 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
 
             // Perform context switch if a different task is ready
             extern "Rust" {
-                static mut SCHEDULERS: [crate::scheduler::bitmap::BitMapScheduler; 2];
+                static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
             }
             let sched = &mut (*core::ptr::addr_of_mut!(SCHEDULERS))[hart_id];
 
             // Scan and wake tasks blocked on ticks
-            for i in 0..crate::scheduler::bitmap::MAX_PARTITIONS {
+            for i in 0..scheduler::bitmap::MAX_PARTITIONS {
                 if let Some(tcb) = &mut sched.task_table[i] {
-                    if let crate::scheduler::TaskState::Blocked { wake_tick } = tcb.state {
+                    if let scheduler::TaskState::Blocked { wake_tick } = tcb.state {
                         if tick >= wake_tick {
-                            tcb.state = crate::scheduler::TaskState::Ready;
+                            tcb.state = scheduler::TaskState::Ready;
                         }
                     }
                 }
@@ -104,7 +104,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
 
             // Force a reschedule check on Software Interrupt
             extern "Rust" {
-                static mut SCHEDULERS: [crate::scheduler::bitmap::BitMapScheduler; 2];
+                static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
             }
             let sched = &mut (*core::ptr::addr_of_mut!(SCHEDULERS))[hart_id];
             if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
@@ -130,7 +130,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                 1 => {
                     // Syscall 1: Cooperative Yield
                     extern "Rust" {
-                        static mut SCHEDULERS: [crate::scheduler::bitmap::BitMapScheduler; 2];
+                        static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
                     }
                     let sched = &mut (*core::ptr::addr_of_mut!(SCHEDULERS))[hart_id];
                     if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
@@ -147,14 +147,14 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     // Syscall 2: Sleep Ticks
                     let ticks = frame.add(6).read_volatile(); // a0
                     extern "Rust" {
-                        static mut SCHEDULERS: [crate::scheduler::bitmap::BitMapScheduler; 2];
+                        static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
                     }
                     let sched = &mut (*core::ptr::addr_of_mut!(SCHEDULERS))[hart_id];
                     let running_idx = sched.current_partition_idx;
 
                     let current_tick = TICK_COUNT.load(Ordering::Relaxed);
                     let tcb = sched.task_table[running_idx].as_mut().unwrap();
-                    tcb.state = crate::scheduler::TaskState::Blocked {
+                    tcb.state = scheduler::TaskState::Blocked {
                         wake_tick: current_tick + ticks as u32,
                     };
 
@@ -172,7 +172,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     // Syscall 3: Lock Mutex
                     let cap_idx = frame.add(6).read_volatile(); // a0
                     extern "Rust" {
-                        static mut SCHEDULERS: [crate::scheduler::bitmap::BitMapScheduler; 2];
+                        static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
                         static mut MUTEXES: [Option<crate::KernelMutex>; 8];
                         static MUTEX_LOCK: crate::kernel::spinlock::Spinlock;
                     }
@@ -187,7 +187,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
 
                     if cap_idx < 8 {
                         let tcb = sched.task_table[running_idx].as_mut().unwrap();
-                        if let crate::scheduler::Capability::Mutex {
+                        if let scheduler::Capability::Mutex {
                             mutex_idx,
                             can_lock: true,
                             ..
@@ -204,7 +204,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                 } else {
                                     // Mutex is locked: block the current task on the mutex
                                     sched.task_table[running_idx].as_mut().unwrap().state =
-                                        crate::scheduler::TaskState::BlockedOnMutex {
+                                        scheduler::TaskState::BlockedOnMutex {
                                             mutex_idx: mutex_idx as u8,
                                         };
 
@@ -240,7 +240,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     } else if lock_granted
                         && !matches!(
                             sched.task_table[running_idx].as_ref().unwrap().state,
-                            crate::scheduler::TaskState::BlockedOnMutex { .. }
+                            scheduler::TaskState::BlockedOnMutex { .. }
                         )
                     {
                         frame.add(6).write_volatile(0); // Return success
@@ -250,7 +250,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     // Syscall 4: Unlock Mutex
                     let cap_idx = frame.add(6).read_volatile(); // a0
                     extern "Rust" {
-                        static mut SCHEDULERS: [crate::scheduler::bitmap::BitMapScheduler; 2];
+                        static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
                         static mut MUTEXES: [Option<crate::KernelMutex>; 8];
                         static MUTEX_LOCK: crate::kernel::spinlock::Spinlock;
                     }
@@ -279,7 +279,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                 .unwrap()
                                 .capabilities[cap_idx]
                         };
-                        if let crate::scheduler::Capability::Mutex {
+                        if let scheduler::Capability::Mutex {
                             mutex_idx,
                             can_unlock: true,
                             ..
@@ -330,7 +330,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                     } else {
                                         sched1.task_table[waiter_idx].as_mut().unwrap()
                                     };
-                                    waiter_tcb.state = crate::scheduler::TaskState::Ready;
+                                    waiter_tcb.state = scheduler::TaskState::Ready;
 
                                     // Write 0 to waiter's saved frame a0 to indicate success
                                     let waiter_frame = waiter_tcb.saved_sp as *mut usize;
@@ -395,7 +395,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                 5 => {
                     // Syscall 5: Watchdog Check-in
                     extern "Rust" {
-                        static mut SCHEDULERS: [crate::scheduler::bitmap::BitMapScheduler; 2];
+                        static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
                     }
                     let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
                     let running_idx = scheds[hart_id].current_partition_idx;
@@ -410,7 +410,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     let msg_len = frame.add(8).read_volatile(); // a2
 
                     extern "Rust" {
-                        static mut SCHEDULERS: [crate::scheduler::bitmap::BitMapScheduler; 2];
+                        static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
                     }
                     let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
                     let [ref mut sched0, ref mut sched1] = *scheds;
@@ -434,7 +434,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                 .unwrap()
                                 .capabilities[cap_idx]
                         };
-                        if let crate::scheduler::Capability::Ipc {
+                        if let scheduler::Capability::Ipc {
                             endpoint_idx,
                             can_send: true,
                             ..
@@ -443,14 +443,14 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                             // Search across BOTH cores' schedulers for a waiting receiver on this endpoint
                             let mut found_receiver: Option<(usize, usize)> = None; // (hart_id, task_idx)
                             for h in 0..2 {
-                                for i in 0..crate::scheduler::bitmap::MAX_PARTITIONS {
+                                for i in 0..scheduler::bitmap::MAX_PARTITIONS {
                                     let other_tcb = if h == 0 {
                                         &sched0.task_table[i]
                                     } else {
                                         &sched1.task_table[i]
                                     };
                                     if let Some(other_tcb) = other_tcb {
-                                        if let crate::scheduler::TaskState::BlockedOnIpcRecv {
+                                        if let scheduler::TaskState::BlockedOnIpcRecv {
                                             endpoint_idx: rx_ep,
                                             ..
                                         } = other_tcb.state
@@ -475,7 +475,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                     sched1.task_table[rx_idx].as_mut().unwrap()
                                 };
 
-                                if let crate::scheduler::TaskState::BlockedOnIpcRecv {
+                                if let scheduler::TaskState::BlockedOnIpcRecv {
                                     buf_addr,
                                     max_len,
                                     ..
@@ -490,7 +490,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                     );
 
                                     // Set receiver's state to Ready
-                                    receiver_tcb.state = crate::scheduler::TaskState::Ready;
+                                    receiver_tcb.state = scheduler::TaskState::Ready;
 
                                     // Write transfer_len (number of bytes received) to receiver's saved frame a0
                                     let rx_frame = receiver_tcb.saved_sp as *mut usize;
@@ -512,7 +512,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                 } else {
                                     sched1.task_table[running_idx].as_mut().unwrap()
                                 };
-                                sender_tcb.state = crate::scheduler::TaskState::BlockedOnIpcSend {
+                                sender_tcb.state = scheduler::TaskState::BlockedOnIpcSend {
                                     endpoint_idx,
                                     msg_addr,
                                     msg_len,
@@ -560,7 +560,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     let max_len = frame.add(8).read_volatile(); // a2
 
                     extern "Rust" {
-                        static mut SCHEDULERS: [crate::scheduler::bitmap::BitMapScheduler; 2];
+                        static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
                     }
                     let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
                     let [ref mut sched0, ref mut sched1] = *scheds;
@@ -584,7 +584,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                 .unwrap()
                                 .capabilities[cap_idx]
                         };
-                        if let crate::scheduler::Capability::Ipc {
+                        if let scheduler::Capability::Ipc {
                             endpoint_idx,
                             can_recv: true,
                             ..
@@ -593,14 +593,14 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                             // Search across BOTH cores' schedulers for a waiting sender on this endpoint
                             let mut found_sender: Option<(usize, usize)> = None; // (hart_id, task_idx)
                             for h in 0..2 {
-                                for i in 0..crate::scheduler::bitmap::MAX_PARTITIONS {
+                                for i in 0..scheduler::bitmap::MAX_PARTITIONS {
                                     let other_tcb = if h == 0 {
                                         &sched0.task_table[i]
                                     } else {
                                         &sched1.task_table[i]
                                     };
                                     if let Some(other_tcb) = other_tcb {
-                                        if let crate::scheduler::TaskState::BlockedOnIpcSend {
+                                        if let scheduler::TaskState::BlockedOnIpcSend {
                                             endpoint_idx: tx_ep,
                                             ..
                                         } = other_tcb.state
@@ -625,7 +625,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                     sched1.task_table[tx_idx].as_mut().unwrap()
                                 };
 
-                                if let crate::scheduler::TaskState::BlockedOnIpcSend {
+                                if let scheduler::TaskState::BlockedOnIpcSend {
                                     msg_addr,
                                     msg_len,
                                     ..
@@ -640,7 +640,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                     );
 
                                     // Set sender's state to Ready
-                                    sender_tcb.state = crate::scheduler::TaskState::Ready;
+                                    sender_tcb.state = scheduler::TaskState::Ready;
 
                                     // Write 0 (success) to sender's saved frame a0
                                     let tx_frame = sender_tcb.saved_sp as *mut usize;
@@ -663,7 +663,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                     sched1.task_table[running_idx].as_mut().unwrap()
                                 };
                                 receiver_tcb.state =
-                                    crate::scheduler::TaskState::BlockedOnIpcRecv {
+                                    scheduler::TaskState::BlockedOnIpcRecv {
                                         endpoint_idx,
                                         buf_addr,
                                         max_len,
@@ -715,7 +715,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
 
                 // Identify and terminate the faulty U-mode task
                 extern "Rust" {
-                    static mut SCHEDULERS: [crate::scheduler::bitmap::BitMapScheduler; 2];
+                    static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
                 }
                 let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
                 let sched = &mut scheds[hart_id];
@@ -727,7 +727,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                         tcb.name,
                         cause
                     );
-                    tcb.state = crate::scheduler::TaskState::Terminated;
+                    tcb.state = scheduler::TaskState::Terminated;
                 }
 
                 // Reschedule to run a healthy task

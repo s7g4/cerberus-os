@@ -1,4 +1,9 @@
 //! Task scheduling and context switching subsystem.
+#![no_std]
+
+#[cfg(kani)]
+extern crate kani;
+
 
 pub mod bitmap;
 pub mod tcb;
