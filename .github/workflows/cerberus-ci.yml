@@ -7,10 +7,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly-2024-11-01
-          targets: riscv32imac-unknown-none-elf
+          target: riscv32imac-unknown-none-elf
           components: clippy, rustfmt
       - run: cargo fmt --check
       - run: cargo clippy --target riscv32imac-unknown-none-elf -- -D warnings
@@ -19,10 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly-2024-11-01
-          targets: riscv32imac-unknown-none-elf
+          target: riscv32imac-unknown-none-elf
           components: llvm-tools-preview
 
       - name: Add LLVM tools to PATH
@@ -60,10 +60,10 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly-2024-11-01
-          targets: riscv32imac-unknown-none-elf
+          target: riscv32imac-unknown-none-elf
 
       - name: Compile Kernel
         run: cargo build --release --target riscv32imac-unknown-none-elf
@@ -72,5 +72,5 @@ jobs:
         uses: antmicro/renode-test-action@v5
         with:
           renode-revision: 'master'
-          tests-to-run: 'renode/esp32c3.robot'
+          tests-to-run: 'renode-config/esp32c3.robot'
 

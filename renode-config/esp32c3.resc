@@ -2,7 +2,8 @@
 
 # Create the emulation machine
 mach create
-machine LoadPlatformDescription @renode/esp32c3.repl
+machine LoadPlatformDescription @renode-config/esp32c3.repl
+
 
 # Load the bare-metal kernel ELF binary
 sysbus LoadELF @target/riscv32imac-unknown-none-elf/release/cerberus-os
