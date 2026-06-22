@@ -6,7 +6,7 @@ Resource                      ${RENODEKEYWORDS}
 *** Test Cases ***
 Should Boot Dual-Core Kernel And Detect Sandboxed U-Mode Fault
     # Load the emulation script
-    Execute Command           include @renode-config/esp32c3.resc
+    Execute Command           include @${CURDIR}/esp32c3.resc
 
     
     # Attach the terminal tester to the SEGGER RTT virtual console

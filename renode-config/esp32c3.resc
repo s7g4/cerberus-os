@@ -2,11 +2,12 @@
 
 # Create the emulation machine
 mach create
-machine LoadPlatformDescription @renode-config/esp32c3.repl
+machine LoadPlatformDescription $ORIGIN/esp32c3.repl
 
 
 # Load the bare-metal kernel ELF binary
-sysbus LoadELF @target/riscv32imac-unknown-none-elf/release/cerberus-os
+sysbus LoadELF $ORIGIN/../target/riscv32imac-unknown-none-elf/release/cerberus-os
+
 
 # Create a virtual console for SEGGER RTT output
 machine CreateVirtualConsole "segger_rtt"
