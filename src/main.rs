@@ -39,6 +39,7 @@ pub static mut TASK_WD_STACK: [u8; 1024] = [0; 1024];
 // Dedicated Kernel Interrupt Stacks (M-mode execution per core)
 pub static mut KERNEL_STACK_0: [u8; 1024] = [0; 1024];
 pub static mut KERNEL_STACK_1: [u8; 1024] = [0; 1024];
+pub static mut HSM_STACK: [u8; 1024] = [0; 1024];
 
 // Synchronization primitives for SMP execution
 pub static BOOT_BARRIER: AtomicBool = AtomicBool::new(false);
@@ -92,6 +93,27 @@ pub fn kmain() -> ! {
             // Initialize PMP boundaries (Priority Masking sandboxing rules)
             init_memory_protection();
 
+            // Run Secure Boot Loader (SBL) verification
+            defmt::info!("SBL: Starting Secure Boot verification...");
+            if security::verify_secure_boot() {
+                defmt::info!("SBL: Secure Boot Verification SUCCESSFUL.");
+            } else {
+                defmt::error!("SBL: Secure Boot Verification FAILED! Halting system.");
+                loop {
+                    core::arch::asm!("wfi");
+                }
+            }
+
+            // Verify SBL tampered detection
+            defmt::info!("SBL: Testing tampered image detection...");
+            if !security::verify_tampered_secure_boot() {
+                defmt::info!("SBL: Tampered image successfully detected and rejected.");
+            } else {
+                defmt::error!(
+                    "SBL: WARNING - Tampered image verification bypassed! Security failure!"
+                );
+            }
+
             // Run cryptographic CAN stack self-test on boot
             verify_network_and_security();
 
@@ -112,10 +134,14 @@ pub fn kmain() -> ! {
                 &mut *core::ptr::addr_of_mut!(TASK_C_STACK),
                 task_c,
             );
+            let sp_hsm = TaskControlBlock::initialize_stack(
+                &mut *core::ptr::addr_of_mut!(HSM_STACK),
+                security::hsm_task,
+            );
 
             let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
 
-            // Core 0 Scheduler registration (Watchdog + Task A)
+            // Core 0 Scheduler registration (Watchdog + Task A + HSM Task)
             scheds[0].register_task(TaskControlBlock {
                 saved_sp: sp_wd,
                 priority: 0,
@@ -139,6 +165,40 @@ pub fn kmain() -> ! {
                     },
                     Capability::Ipc {
                         endpoint_idx: 0,
+                        can_send: true,
+                        can_recv: false,
+                    },
+                    Capability::Ipc {
+                        endpoint_idx: 2,
+                        can_send: true,
+                        can_recv: false,
+                    },
+                    Capability::Ipc {
+                        endpoint_idx: 3,
+                        can_send: false,
+                        can_recv: true,
+                    },
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                    Capability::None,
+                ],
+            });
+
+            scheds[0].register_task(TaskControlBlock {
+                saved_sp: sp_hsm,
+                priority: 4,
+                active_priority: 4,
+                state: TaskState::Ready,
+                name: "HSM Task",
+                capabilities: [
+                    Capability::Ipc {
+                        endpoint_idx: 2,
+                        can_send: false,
+                        can_recv: true,
+                    },
+                    Capability::Ipc {
+                        endpoint_idx: 3,
                         can_send: true,
                         can_recv: false,
                     },
@@ -234,17 +294,15 @@ pub fn kmain() -> ! {
     }
 }
 
-/// Verification routine to test the CAN parser, ring buffer, and HMAC authentication on boot.
+/// Verification routine to test the CAN parser and ring buffer on boot.
 fn verify_network_and_security() {
     use core::sync::atomic::Ordering;
     use kernel::metrics::{
         METRIC_CAN_PARSE_CYCLES, METRIC_CAN_QUEUE_CYCLES, METRIC_FRAMES_DROPPED, METRIC_FRAMES_RX,
-        METRIC_HMAC_FAILURES, METRIC_HMAC_VERIFY_CYCLES,
     };
     use network::{CanError, CanFrame, CanRingBuffer};
-    use security::{compute_hmac, verify_frame, AuthFrame};
 
-    defmt::info!("Executing network & cryptographic self-test...");
+    defmt::info!("Executing network self-test...");
 
     // 1. Simulate receiving a raw 13-byte transceiver frame
     let mut raw_frame = [0u8; 13];
@@ -271,24 +329,7 @@ fn verify_network_and_security() {
             );
             METRIC_FRAMES_RX.fetch_add(1, Ordering::Relaxed);
 
-            // 2. Cryptographic signature generation and verification latency measurement
-            let start_crypto = read_cycles();
-            let tag = compute_hmac(&frame);
-            let auth = AuthFrame { frame, tag };
-            let verified = verify_frame(&auth);
-            let end_crypto = read_cycles();
-            METRIC_HMAC_VERIFY_CYCLES
-                .store(end_crypto.wrapping_sub(start_crypto), Ordering::Relaxed);
-
-            defmt::info!("HMAC Sign: Generated tag = {:?}", tag);
-            if verified {
-                defmt::info!("HMAC Verify: Signature verification passed.");
-            } else {
-                METRIC_HMAC_FAILURES.fetch_add(1, Ordering::Relaxed);
-                defmt::error!("HMAC Verify: Verification failed!");
-            }
-
-            // 3. Queue frame into lock-free ring buffer and measure SPSC queue operations latency
+            // 2. Queue frame into lock-free ring buffer and measure SPSC queue operations latency
             let mut can_queue = CanRingBuffer::new();
             let start_queue = read_cycles();
             let push_ok = can_queue.push(frame).is_ok();
@@ -369,6 +410,20 @@ unsafe fn init_memory_protection() {
     configure_pmp(
         4,
         core::ptr::addr_of!(TASK_WD_STACK) as usize,
+        1024,
+        PmpConfig {
+            read: false,
+            write: false,
+            execute: false,
+            mode: PmpAddressMode::Napot,
+            locked: false,
+        },
+    );
+
+    // Entry 5: HSM Stack (No Access, Unlocked)
+    configure_pmp(
+        5,
+        core::ptr::addr_of!(HSM_STACK) as usize,
         1024,
         PmpConfig {
             read: false,
@@ -467,7 +522,7 @@ fn watchdog_checkin() {
 }
 
 /// Syscall wrapper to send an IPC message (synchronous rendezvous).
-fn sys_send(cap_idx: usize, msg: &[u8]) -> isize {
+pub(crate) fn sys_send(cap_idx: usize, msg: &[u8]) -> isize {
     #[cfg(not(kani))]
     {
         let ret: isize;
@@ -493,7 +548,7 @@ fn sys_send(cap_idx: usize, msg: &[u8]) -> isize {
 }
 
 /// Syscall wrapper to receive an IPC message (synchronous rendezvous).
-fn sys_recv(cap_idx: usize, buf: &mut [u8]) -> isize {
+pub(crate) fn sys_recv(cap_idx: usize, buf: &mut [u8]) -> isize {
     #[cfg(not(kani))]
     {
         let ret: isize;
@@ -619,6 +674,54 @@ extern "C" fn task_a() -> ! {
         defmt::info!("Task A (High) releasing Mutex 0...");
         unlock_mutex(0);
         defmt::info!("Task A (High) released Mutex 0.");
+
+        // --- HSM cryptographic signing demo ---
+        let test_frame = network::can::CanFrame {
+            id: 0x3E,
+            dlc: 4,
+            payload: [0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 0],
+        };
+        let frame_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &test_frame as *const network::can::CanFrame as *const u8,
+                core::mem::size_of::<network::can::CanFrame>(),
+            )
+        };
+        let mut computed_tag = [0u8; 8];
+        defmt::info!("Task A: Requesting HSM to sign CAN frame...");
+        let start_cycles = read_cycles();
+
+        // Send the frame to the HSM on capability index 2 (endpoint 2)
+        let send_res = sys_send(2, frame_bytes);
+
+        // Receive the signature back on capability index 3 (endpoint 3)
+        let recv_res = sys_recv(3, &mut computed_tag);
+        let end_cycles = read_cycles();
+
+        if send_res >= 0 && recv_res >= 0 {
+            defmt::info!(
+                "Task A: Received signature from HSM: {:X} (Overhead: {} cycles)",
+                computed_tag,
+                end_cycles.wrapping_sub(start_cycles)
+            );
+            // Verify signature using the helper function (uses endpoints 2 and 3)
+            let auth = security::AuthFrame {
+                frame: test_frame,
+                tag: computed_tag,
+            };
+            let hsm_verified = security::verify_frame_secure(&auth, 2, 3);
+            if hsm_verified {
+                defmt::info!("Task A: HSM-calculated signature verified successfully.");
+            } else {
+                defmt::error!("Task A: HSM signature verification failed!");
+            }
+        } else {
+            defmt::error!(
+                "Task A: HSM IPC communication failed! Send: {}, Recv: {}",
+                send_res,
+                recv_res
+            );
+        }
 
         // Send a synchronous IPC message to Task B
         let msg = [0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78];

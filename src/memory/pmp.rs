@@ -86,18 +86,20 @@ pub unsafe fn configure_pmp(entry: usize, base_addr: usize, size: usize, config:
     }
 }
 
-/// Dynamically reprograms PMP Entries 1, 2, and 4 to block U-mode access to all three inactive task stacks.
+/// Dynamically reprograms PMP Entries 1, 2, 4, and 5 to block U-mode access to all four inactive task stacks.
 pub unsafe fn reprogram_pmp_stack(active_task_name: &str) {
     let addr_a = core::ptr::addr_of_mut!(crate::TASK_A_STACK) as usize;
     let addr_b = core::ptr::addr_of_mut!(crate::TASK_B_STACK) as usize;
     let addr_c = core::ptr::addr_of_mut!(crate::TASK_C_STACK) as usize;
     let addr_wd = core::ptr::addr_of_mut!(crate::TASK_WD_STACK) as usize;
+    let addr_hsm = core::ptr::addr_of_mut!(crate::HSM_STACK) as usize;
 
-    let (inactive_1, inactive_2, inactive_3) = match active_task_name {
-        "Watchdog" => (addr_a, addr_b, addr_c),
-        "Task A" => (addr_wd, addr_b, addr_c),
-        "Task B" => (addr_wd, addr_a, addr_c),
-        _ => (addr_wd, addr_a, addr_b),
+    let (inactive_1, inactive_2, inactive_3, inactive_4) = match active_task_name {
+        "Watchdog" => (addr_a, addr_b, addr_c, addr_hsm),
+        "Task A" => (addr_wd, addr_b, addr_c, addr_hsm),
+        "Task B" => (addr_wd, addr_a, addr_c, addr_hsm),
+        "Task C" => (addr_wd, addr_a, addr_b, addr_hsm),
+        _ => (addr_wd, addr_a, addr_b, addr_c), // HSM active
     };
 
     // Reprogram Entry 1 to block inactive stack 1
@@ -132,6 +134,20 @@ pub unsafe fn reprogram_pmp_stack(active_task_name: &str) {
     configure_pmp(
         4,
         inactive_3,
+        1024,
+        PmpConfig {
+            read: false,
+            write: false,
+            execute: false,
+            mode: PmpAddressMode::Napot,
+            locked: false,
+        },
+    );
+
+    // Reprogram Entry 5 to block inactive stack 4
+    configure_pmp(
+        5,
+        inactive_4,
         1024,
         PmpConfig {
             read: false,

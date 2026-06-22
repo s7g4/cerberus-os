@@ -9,6 +9,8 @@ defmt-rtt = "0.4.1"
 riscv = { version = "0.11.1", features = ["critical-section-single-hart"] }
 riscv-rt = "0.12.0"
 sha2 = { version = "0.10.8", default-features = false }
+p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "arithmetic"] }
+zeroize = { version = "=1.8.1", default-features = false }
 
 [features]
 default = []
