@@ -4,7 +4,6 @@
 #[cfg(kani)]
 extern crate kani;
 
-
 pub mod bitmap;
 pub mod tcb;
 

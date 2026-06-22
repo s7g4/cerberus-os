@@ -662,12 +662,11 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                 } else {
                                     sched1.task_table[running_idx].as_mut().unwrap()
                                 };
-                                receiver_tcb.state =
-                                    scheduler::TaskState::BlockedOnIpcRecv {
-                                        endpoint_idx,
-                                        buf_addr,
-                                        max_len,
-                                    };
+                                receiver_tcb.state = scheduler::TaskState::BlockedOnIpcRecv {
+                                    endpoint_idx,
+                                    buf_addr,
+                                    max_len,
+                                };
 
                                 // Reschedule since current task is now blocked
                                 let resched_result = if hart_id == 0 {

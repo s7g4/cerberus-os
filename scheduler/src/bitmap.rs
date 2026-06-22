@@ -114,7 +114,6 @@ impl BitMapScheduler {
     }
 }
 
-
 #[cfg(kani)]
 mod verification {
     use super::*;

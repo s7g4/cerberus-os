@@ -72,4 +72,3 @@ pub extern "C" fn hsm_task() -> ! {
         }
     }
 }
-

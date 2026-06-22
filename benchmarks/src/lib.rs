@@ -1,6 +1,6 @@
 //! Shared benchmarking helper utilities for Cerberus-OS.
 
-use scheduler::{BitMapScheduler, TaskControlBlock, TaskState, Capability};
+use scheduler::{BitMapScheduler, Capability, TaskControlBlock, TaskState};
 
 /// Helper to set up a scheduler with a given number of registered mock tasks.
 pub fn setup_benchmark_scheduler(num_tasks: usize) -> BitMapScheduler {

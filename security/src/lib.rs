@@ -4,7 +4,6 @@
 #[cfg(kani)]
 extern crate kani;
 
-
 pub mod bootloader;
 pub mod hmac;
 pub mod hsm;

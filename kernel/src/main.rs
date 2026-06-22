@@ -13,7 +13,6 @@ mod trap;
 
 use scheduler::{BitMapScheduler, Capability, TaskControlBlock, TaskState};
 
-
 // Link the low-level assembly trap handler
 #[cfg(not(kani))]
 core::arch::global_asm!(include_str!("trap_entry.s"));

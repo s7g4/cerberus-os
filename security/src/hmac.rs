@@ -40,4 +40,3 @@ pub fn verify_frame_secure(auth: &AuthFrame, hsm_send_cap: usize, hsm_recv_cap: 
         .fold(0u8, |acc, (a, b)| acc | (a ^ b))
         == 0
 }
-

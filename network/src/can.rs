@@ -66,6 +66,12 @@ pub struct CanRingBuffer {
     tail: usize,
 }
 
+impl Default for CanRingBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CanRingBuffer {
     pub const fn new() -> Self {
         // Compile-time assert that capacity is a power of two
