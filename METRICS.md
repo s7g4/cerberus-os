@@ -13,3 +13,5 @@
 | M09 | sleep_ticks_latency | Syscall 2 sleep blocking overhead | cycles | <60 | 14 | mcycle CSR | Thread Watchdog |
 | M10 | partition_swap_latency | Time to swap time partition context | cycles | <80 | 58 | mcycle CSR | Time Partitioning |
 | M11 | zero_copy_ipc_latency | Direct stack-to-stack rendezvous transfer | cycles | <70 | 32 | mcycle CSR | Capability IPC |
+| M12 | secure_boot_size_text | .text size after Secure Boot & vHSM | bytes | <32768 | 26364 | cargo-size | Milestone 19 |
+
