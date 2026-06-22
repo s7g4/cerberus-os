@@ -8,6 +8,11 @@ machine LoadPlatformDescription $ORIGIN/esp32c3.repl
 # Load the bare-metal kernel ELF binary
 sysbus LoadELF $ORIGIN/../target/riscv32imac-unknown-none-elf/release/cerberus-os
 
+# Set the PC of both harts to the ELF entry point
+cpu0 PC 0x42000000
+cpu1 PC 0x42000000
+
+
 
 # Create a virtual console for SEGGER RTT output
 machine CreateVirtualConsole "segger_rtt"
