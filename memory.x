@@ -1,3 +1,6 @@
+_max_hart_id = 1;
+_hart_stack_size = 1K;
+
 MEMORY
 {
   /* ESP32-C3 SRAM 1 (Data RAM) */

@@ -16,9 +16,35 @@ cpu1 PC 0x42000000
 
 # Create a virtual console for SEGGER RTT output
 machine CreateVirtualConsole "segger_rtt"
+sysbus.segger_rtt CreateFileBackend @rtt_output.log true
 
-# Include the standard Renode SEGGER RTT helper script
-include @scripts/single-node/segger-rtt.py
+# Define the custom Python script for RISC-V RTT
+set rtt_script """
+def mc_setup_segger_rtt():
+    bus = monitor.Machine.SystemBus
+    console = None
+    for p in monitor.Machine.GetRegisteredPeripherals():
+        if p.Name == "segger_rtt":
+            console = p.Peripheral
+            break
 
-# Setup and link the SEGGER RTT console to memory
-setup_segger_rtt sysbus.segger_rtt
+    def write(cpu, _):
+        pointer = cpu.GetRegister(11).RawValue  # a1 is register 11
+        length = cpu.GetRegister(12).RawValue   # a2 is register 12
+        for i in range(length):
+            console.DisplayChar(bus.ReadByte(pointer + i))
+
+    for cpu in bus.GetCPUs():
+        found, addresses = bus.TryGetAllSymbolAddresses("SEGGER_RTT_WriteNoLock", cpu)
+        if not found:
+            cpu.WarningLog("Symbol 'SEGGER_RTT_WriteNoLock' not found.")
+        else:
+            for address in addresses:
+                cpu.InfoLog("Adding hook at SEGGER_RTT_WriteNoLock address: 0x%x" % address)
+                cpu.AddHook(address, write)
+"""
+
+python $rtt_script
+
+# Setup and link the SEGGER RTT console to memory using the custom Python function
+python "mc_setup_segger_rtt()"

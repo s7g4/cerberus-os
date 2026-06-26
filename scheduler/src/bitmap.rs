@@ -66,17 +66,29 @@ impl BitMapScheduler {
         // 2. Forced reschedule (cooperative yield/block, is_tick == false)
         // 3. Current task is no longer runnable (blocked on mutex/sleeping/terminated)
         if self.remaining_mif_ticks == 0 || !is_tick || !current_runnable {
-            // Find the next ready partition in cyclic order
+            // Pass 1: Find next ready partition in cyclic order (excluding idle partition 31)
             let mut next_idx = (current_idx + 1) % MAX_PARTITIONS;
             let mut found = false;
             for _ in 0..MAX_PARTITIONS {
-                if let Some(tcb) = &self.task_table[next_idx] {
-                    if tcb.state == TaskState::Ready {
-                        found = true;
-                        break;
+                if next_idx != 31 {
+                    if let Some(tcb) = &self.task_table[next_idx] {
+                        if tcb.state == TaskState::Ready {
+                            found = true;
+                            break;
+                        }
                     }
                 }
                 next_idx = (next_idx + 1) % MAX_PARTITIONS;
+            }
+
+            if !found {
+                // Pass 2: Fall back to partition 31 (Idle task) if ready
+                if let Some(tcb) = &self.task_table[31] {
+                    if tcb.state == TaskState::Ready {
+                        next_idx = 31;
+                        found = true;
+                    }
+                }
             }
 
             if !found {

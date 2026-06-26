@@ -1,1 +1,8 @@
 /target
+log.html
+report.html
+robot_output.xml
+results-esp32c3.robot.xml
+logs/
+snapshots/
+rtt_output.log
