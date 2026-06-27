@@ -3,6 +3,7 @@
 #![allow(unused_variables)]
 
 use core::sync::atomic::{AtomicU32, Ordering};
+use crate::defmt;
 
 /// Master clock counter incremented on every timer interrupt.
 pub static TICK_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -703,39 +704,299 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                         frame.add(6).write_volatile(-1isize as usize);
                     }
                 }
+                8 => {
+                    // Syscall 8: Terminate Task (takes task priority/index to terminate in a0)
+                    let target_prio = frame.add(6).read_volatile();
+                    
+                    extern "Rust" {
+                        static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
+                        static mut MUTEXES: [Option<crate::KernelMutex>; 8];
+                        static MUTEX_LOCK: crate::kernel::spinlock::Spinlock;
+                    }
+                    let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
+                    let [ref mut sched0, ref mut sched1] = *scheds;
+                    
+                    let mut found_hart = 0;
+                    let mut terminated_name: Option<&'static str> = None;
+                    if target_prio < scheduler::bitmap::MAX_PARTITIONS {
+                        if let Some(ref mut tcb) = sched0.task_table[target_prio] {
+                            defmt::warn!("Syscall 8: Terminating task '{}' (priority {})", tcb.name, target_prio);
+                            tcb.state = scheduler::TaskState::Terminated;
+                            terminated_name = Some(tcb.name);
+                            found_hart = 0;
+                        } else if let Some(ref mut tcb) = sched1.task_table[target_prio] {
+                            defmt::warn!("Syscall 8: Terminating task '{}' (priority {})", tcb.name, target_prio);
+                            tcb.state = scheduler::TaskState::Terminated;
+                            terminated_name = Some(tcb.name);
+                            found_hart = 1;
+                        }
+                    }
+                    
+                    if let Some(name) = terminated_name {
+                        // Mutex recovery
+                        MUTEX_LOCK.lock();
+                        let mutexes = &mut *core::ptr::addr_of_mut!(MUTEXES);
+                        for (i, mutex_opt) in mutexes.iter_mut().enumerate() {
+                            if let Some(mutex) = mutex_opt {
+                                if mutex.owner_task_idx == Some(target_prio as u8) {
+                                    defmt::warn!("Releasing Mutex {} owned by terminated task '{}'", i, name);
+                                    mutex.locked = false;
+                                    mutex.owner_task_idx = None;
+                                    
+                                    // Wake up highest priority waiter if any
+                                    let mut highest_waiter: Option<usize> = None;
+                                    for w in 0..32 {
+                                        if (mutex.waiters_bitmap & (1 << w)) != 0 {
+                                            if let Some(curr_w) = highest_waiter {
+                                                let w_prio = if w < 2 {
+                                                    sched0.task_table[w].as_ref().unwrap().priority
+                                                } else {
+                                                    sched1.task_table[w].as_ref().unwrap().priority
+                                                };
+                                                let curr_w_prio = if curr_w < 2 {
+                                                    sched0.task_table[curr_w].as_ref().unwrap().priority
+                                                } else {
+                                                    sched1.task_table[curr_w].as_ref().unwrap().priority
+                                                };
+                                                if w_prio < curr_w_prio {
+                                                    highest_waiter = Some(w);
+                                                }
+                                            } else {
+                                                highest_waiter = Some(w);
+                                            }
+                                        }
+                                    }
+                                    
+                                    if let Some(w) = highest_waiter {
+                                        mutex.locked = true;
+                                        mutex.owner_task_idx = Some(w as u8);
+                                        mutex.waiters_bitmap &= !(1 << w);
+                                        
+                                        if w < 2 {
+                                            if let Some(waiter_tcb) = &mut sched0.task_table[w] {
+                                                waiter_tcb.state = scheduler::TaskState::Ready;
+                                            }
+                                        } else if let Some(waiter_tcb) = &mut sched1.task_table[w] {
+                                            waiter_tcb.state = scheduler::TaskState::Ready;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        MUTEX_LOCK.unlock();
+                        
+                        frame.add(6).write_volatile(0);
+                        
+                        if found_hart != hart_id {
+                            let msip = (0x0200_0000 + found_hart * 4) as *mut u32;
+                            msip.write_volatile(1);
+                        } else {
+                            let active_idx = if hart_id == 0 { sched0.current_partition_idx } else { sched1.current_partition_idx };
+                            if target_prio == active_idx {
+                                let sched = if hart_id == 0 { sched0 } else { sched1 };
+                                if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
+                                    old_sp_ptr.write_volatile(current_sp);
+                                    current_sp = new_sp;
+                                    let active_idx = sched.current_partition_idx;
+                                    if let Some(new_tcb) = &sched.task_table[active_idx] {
+                                        crate::memory::reprogram_pmp_stack(new_tcb.name);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        frame.add(6).write_volatile(-1isize as usize);
+                    }
+                }
                 _ => {
                     defmt::warn!("Unhandled syscall ID: {}", syscall_id);
                 }
             }
         }
         cause => {
-            if cause == 1 || cause == 5 || cause == 7 {
-                crate::kernel::metrics::METRIC_PMP_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+            if cause == 2 {
+                let frame = current_sp as *mut usize;
+                let mepc = unsafe { frame.add(28).read_volatile() };
+                let instruction = unsafe { core::ptr::read_unaligned(mepc as *const u32) };
 
-                // Identify and terminate the faulty U-mode task
+                // Emulate CSR access to mstatus (0x300), cycle (0xC00), or mcycle (0xB00) to allow U-mode logging and cycle profiling
+                let csr = instruction >> 20;
+                if (instruction & 0x7F) == 0x73 && (csr == 0x300 || csr == 0xC00 || csr == 0xB00) {
+                    let rd_idx = (instruction >> 7) & 0x1F;
+                    let val = if csr == 0x300 {
+                        0 // mstatus dummy value
+                    } else {
+                        // Return actual hardware cycles read in M-mode
+                        let cycles: usize;
+                        unsafe {
+                            core::arch::asm!("csrr {}, mcycle", out(reg) cycles);
+                        }
+                        cycles
+                    };
+
+                    let frame_idx = match rd_idx {
+                        1 => Some(0),
+                        5 => Some(1),
+                        6 => Some(2),
+                        7 => Some(3),
+                        8 => Some(4),
+                        9 => Some(5),
+                        10 => Some(6),
+                        11 => Some(7),
+                        12 => Some(8),
+                        13 => Some(9),
+                        14 => Some(10),
+                        15 => Some(11),
+                        16 => Some(12),
+                        17 => Some(13),
+                        18 => Some(14),
+                        19 => Some(15),
+                        20 => Some(16),
+                        21 => Some(17),
+                        22 => Some(18),
+                        23 => Some(19),
+                        24 => Some(20),
+                        25 => Some(21),
+                        26 => Some(22),
+                        27 => Some(23),
+                        28 => Some(24),
+                        29 => Some(25),
+                        30 => Some(26),
+                        31 => Some(27),
+                        _ => None,
+                    };
+                    if let Some(idx) = frame_idx {
+                        unsafe {
+                            frame.add(idx).write_volatile(val);
+                        }
+                    }
+                    unsafe {
+                        frame.add(28).write_volatile(mepc + 4);
+                    }
+                    return current_sp;
+                }
+            }
+
+            if cause == 1 || cause == 2 || cause == 5 || cause == 7 {
+                if cause != 2 {
+                    crate::kernel::metrics::METRIC_PMP_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+                }
+
+                // Declare the statics
                 extern "Rust" {
                     static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
-                }
-                let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
-                let sched = &mut scheds[hart_id];
-                let running_idx = sched.current_partition_idx;
-
-                if let Some(tcb) = &mut sched.task_table[running_idx] {
-                    defmt::error!(
-                        "SECURITY FAULT: Task '{}' triggered memory access violation (cause: {}). Terminating task.",
-                        tcb.name,
-                        cause
-                    );
-                    tcb.state = scheduler::TaskState::Terminated;
+                    static mut MUTEXES: [Option<crate::KernelMutex>; 8];
+                    static MUTEX_LOCK: crate::kernel::spinlock::Spinlock;
                 }
 
-                // Reschedule to run a healthy task
-                if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
-                    old_sp_ptr.write_volatile(current_sp);
-                    current_sp = new_sp;
-                    let active_idx = sched.current_partition_idx;
-                    if let Some(new_tcb) = &sched.task_table[active_idx] {
-                        crate::memory::reprogram_pmp_stack(new_tcb.name);
+                let running_idx;
+                let mut task_terminated = false;
+                let mut terminated_task_name: Option<&'static str> = None;
+
+                // Scope 1: Terminate the task and identify running index and task name
+                {
+                    let scheds = unsafe { &mut *core::ptr::addr_of_mut!(SCHEDULERS) };
+                    let sched = &mut scheds[hart_id];
+                    running_idx = sched.current_partition_idx;
+
+                     if let Some(tcb) = &mut sched.task_table[running_idx] {
+                        let cause_str = match cause {
+                            1 => "Instruction Access Fault",
+                            2 => "Illegal Instruction",
+                            5 => "Load Access Fault",
+                            7 => "Store Access Fault",
+                            _ => "Unknown Exception",
+                        };
+                        let frame = current_sp as *const usize;
+                        let mepc = unsafe { frame.add(28).read_volatile() };
+                        defmt::error!(
+                            "SECURITY FAULT: Task '{}' triggered exception '{}' (cause: {}) at PC: 0x{:X}. Terminating task.",
+                            tcb.name,
+                            cause_str,
+                            cause,
+                            mepc
+                        );
+                        tcb.state = scheduler::TaskState::Terminated;
+                        terminated_task_name = Some(tcb.name);
+                        task_terminated = true;
+                    }
+                }
+
+                // Scope 2: Mutex recovery and waker logic
+                if task_terminated {
+                    unsafe {
+                        MUTEX_LOCK.lock();
+                        let mutexes = &mut *core::ptr::addr_of_mut!(MUTEXES);
+                        let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
+                        for (i, mutex_opt) in mutexes.iter_mut().enumerate() {
+                            if let Some(mutex) = mutex_opt {
+                                if mutex.owner_task_idx == Some(running_idx as u8) {
+                                    if let Some(name) = terminated_task_name {
+                                        defmt::warn!("Releasing Mutex {} owned by terminated task '{}'", i, name);
+                                    } else {
+                                        defmt::warn!("Releasing Mutex {} owned by terminated task idx {}", i, running_idx);
+                                    }
+                                    mutex.locked = false;
+                                    mutex.owner_task_idx = None;
+
+                                    // Wake up highest priority waiter if any
+                                    let mut highest_waiter: Option<usize> = None;
+                                    for w in 0..32 {
+                                        if (mutex.waiters_bitmap & (1 << w)) != 0 {
+                                            if let Some(curr_w) = highest_waiter {
+                                                let w_prio = if w < 2 {
+                                                    scheds[0].task_table[w].as_ref().unwrap().priority
+                                                } else {
+                                                    scheds[1].task_table[w].as_ref().unwrap().priority
+                                                };
+                                                let curr_w_prio = if curr_w < 2 {
+                                                    scheds[0].task_table[curr_w].as_ref().unwrap().priority
+                                                } else {
+                                                    scheds[1].task_table[curr_w].as_ref().unwrap().priority
+                                                };
+                                                if w_prio < curr_w_prio {
+                                                    highest_waiter = Some(w);
+                                                }
+                                            } else {
+                                                highest_waiter = Some(w);
+                                            }
+                                        }
+                                    }
+
+                                    if let Some(w) = highest_waiter {
+                                        mutex.locked = true;
+                                        mutex.owner_task_idx = Some(w as u8);
+                                        mutex.waiters_bitmap &= !(1 << w);
+
+                                        // Set state of the waiter task to Ready
+                                        if w < 2 {
+                                            if let Some(waiter_tcb) = &mut scheds[0].task_table[w] {
+                                                waiter_tcb.state = scheduler::TaskState::Ready;
+                                            }
+                                        } else if let Some(waiter_tcb) = &mut scheds[1].task_table[w] {
+                                            waiter_tcb.state = scheduler::TaskState::Ready;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        MUTEX_LOCK.unlock();
+                    }
+                }
+
+                // Scope 3: Reschedule to run a healthy task
+                {
+                    let scheds = unsafe { &mut *core::ptr::addr_of_mut!(SCHEDULERS) };
+                    let sched = &mut scheds[hart_id];
+                    if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
+                        unsafe {
+                            old_sp_ptr.write_volatile(current_sp);
+                        }
+                        current_sp = new_sp;
+                        let active_idx = sched.current_partition_idx;
+                        if let Some(new_tcb) = &sched.task_table[active_idx] {
+                            crate::memory::reprogram_pmp_stack(new_tcb.name);
+                        }
                     }
                 }
             } else {

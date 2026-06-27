@@ -5,7 +5,10 @@
 pub fn yield_now() {
     #[cfg(not(kani))]
     unsafe {
-        core::arch::asm!("li a7, 1", "ecall");
+        core::arch::asm!(
+            "ecall",
+            in("a7") 1usize,
+        );
     }
 }
 
@@ -16,10 +19,9 @@ pub fn sleep_ticks(ticks: usize) {
     #[cfg(not(kani))]
     unsafe {
         core::arch::asm!(
-            "li a7, 2",
-            "mv a0, {}",
             "ecall",
-            in(reg) ticks
+            in("a7") 2usize,
+            in("a0") ticks,
         );
     }
 }
@@ -31,10 +33,9 @@ pub fn lock_mutex(idx: usize) {
     #[cfg(not(kani))]
     unsafe {
         core::arch::asm!(
-            "li a7, 3",
-            "mv a0, {}",
             "ecall",
-            in(reg) idx
+            in("a7") 3usize,
+            in("a0") idx,
         );
     }
 }
@@ -46,10 +47,9 @@ pub fn unlock_mutex(idx: usize) {
     #[cfg(not(kani))]
     unsafe {
         core::arch::asm!(
-            "li a7, 4",
-            "mv a0, {}",
             "ecall",
-            in(reg) idx
+            in("a7") 4usize,
+            in("a0") idx,
         );
     }
 }
@@ -59,7 +59,10 @@ pub fn unlock_mutex(idx: usize) {
 pub fn watchdog_checkin() {
     #[cfg(not(kani))]
     unsafe {
-        core::arch::asm!("li a7, 5", "ecall");
+        core::arch::asm!(
+            "ecall",
+            in("a7") 5usize,
+        );
     }
 }
 
@@ -71,15 +74,11 @@ pub fn sys_send(cap_idx: usize, msg: &[u8]) -> isize {
         let ret: isize;
         unsafe {
             core::arch::asm!(
-                "li a7, 6",
-                "mv a0, {0}",
-                "mv a1, {1}",
-                "mv a2, {2}",
                 "ecall",
-                in(reg) cap_idx,
-                in(reg) msg.as_ptr() as usize,
-                in(reg) msg.len(),
-                lateout("a0") ret
+                in("a7") 6usize,
+                inout("a0") cap_idx => ret,
+                in("a1") msg.as_ptr() as usize,
+                in("a2") msg.len(),
             );
         }
         ret
@@ -100,15 +99,11 @@ pub fn sys_recv(cap_idx: usize, buf: &mut [u8]) -> isize {
         let ret: isize;
         unsafe {
             core::arch::asm!(
-                "li a7, 7",
-                "mv a0, {0}",
-                "mv a1, {1}",
-                "mv a2, {2}",
                 "ecall",
-                in(reg) cap_idx,
-                in(reg) buf.as_mut_ptr() as usize,
-                in(reg) buf.len(),
-                lateout("a0") ret
+                in("a7") 7usize,
+                inout("a0") cap_idx => ret,
+                in("a1") buf.as_mut_ptr() as usize,
+                in("a2") buf.len(),
             );
         }
         ret
@@ -117,6 +112,28 @@ pub fn sys_recv(cap_idx: usize, buf: &mut [u8]) -> isize {
     {
         let _ = cap_idx;
         let _ = buf;
+        0
+    }
+}
+
+/// Syscall wrapper to terminate a task by priority.
+#[inline(always)]
+pub fn sys_terminate_task(prio: usize) -> isize {
+    #[cfg(not(kani))]
+    {
+        let ret: isize;
+        unsafe {
+            core::arch::asm!(
+                "ecall",
+                in("a7") 8usize,
+                inout("a0") prio => ret,
+            );
+        }
+        ret
+    }
+    #[cfg(kani)]
+    {
+        let _ = prio;
         0
     }
 }

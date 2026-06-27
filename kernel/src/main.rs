@@ -5,7 +5,135 @@
 #![feature(naked_functions)]
 #![allow(unused_variables, dead_code, stable_features)]
 
-use defmt_rtt as _;
+mod logger_setup {
+    extern crate defmt as real_defmt;
+
+    static LOG_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+    #[real_defmt::global_logger]
+    struct MyLogger;
+
+    unsafe impl real_defmt::Logger for MyLogger {
+        fn acquire() {
+            let _ = LOG_LOCK.compare_exchange(
+                false,
+                true,
+                core::sync::atomic::Ordering::Acquire,
+                core::sync::atomic::Ordering::Relaxed,
+            );
+        }
+
+        unsafe fn release() {
+            LOG_LOCK.store(false, core::sync::atomic::Ordering::Release);
+        }
+
+        unsafe fn write(bytes: &[u8]) {
+            unsafe {
+                crate::SEGGER_RTT_WriteNoLock(0, bytes.as_ptr(), bytes.len());
+            }
+        }
+
+        unsafe fn flush() {}
+    }
+
+    real_defmt::timestamp!("{=u32}", 0);
+}
+
+pub struct HexSlice<'a>(pub &'a [u8]);
+
+impl core::fmt::UpperHex for HexSlice<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for &byte in self.0 {
+            write!(f, "{:02X}", byte)?;
+        }
+        Ok(())
+    }
+}
+
+#[macro_export]
+macro_rules! rtt_info {
+    ($($arg:tt)*) => {
+        $crate::rtt_println!($($arg)*);
+    };
+}
+
+#[macro_export]
+macro_rules! rtt_warn {
+    ($($arg:tt)*) => {
+        $crate::rtt_println!($($arg)*);
+    };
+}
+
+#[macro_export]
+macro_rules! rtt_error {
+    ($($arg:tt)*) => {
+        $crate::rtt_println!($($arg)*);
+    };
+}
+
+#[macro_export]
+macro_rules! rtt_trace {
+    ($($arg:tt)*) => {
+        $crate::rtt_println!($($arg)*);
+    };
+}
+
+pub mod defmt {
+    pub struct RttWriter;
+
+    impl core::fmt::Write for RttWriter {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            unsafe {
+                crate::SEGGER_RTT_WriteNoLock(0, s.as_ptr(), s.len());
+            }
+            Ok(())
+        }
+    }
+
+    #[macro_export]
+    macro_rules! rtt_println {
+        ($($arg:tt)*) => {
+            {
+                use core::fmt::Write;
+                let mut writer = $crate::defmt::RttWriter;
+                let _ = writeln!(&mut writer, $($arg)*);
+            }
+        };
+    }
+
+    #[macro_export]
+    macro_rules! rtt_print {
+        ($($arg:tt)*) => {
+            {
+                use core::fmt::Write;
+                let mut writer = $crate::defmt::RttWriter;
+                let _ = write!(&mut writer, $($arg)*);
+            }
+        };
+    }
+
+    pub use crate::{
+        rtt_info as info,
+        rtt_warn as warn,
+        rtt_error as error,
+        rtt_trace as trace,
+    };
+}
+
+
+#[no_mangle]
+#[inline(never)]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn SEGGER_RTT_WriteNoLock(
+    channel: usize,
+    ptr: *const u8,
+    len: usize,
+) -> usize {
+    core::hint::black_box(channel);
+    core::hint::black_box(ptr);
+    core::hint::black_box(len);
+    len
+}
 
 mod kernel;
 mod memory;
@@ -27,19 +155,26 @@ use core::sync::atomic::{AtomicBool, Ordering};
 #[no_mangle]
 pub static mut SCHEDULERS: [BitMapScheduler; 2] = [BitMapScheduler::new(), BitMapScheduler::new()];
 
+#[repr(align(1024))]
+pub struct Stack(pub [u8; 1024]);
+
 // Static buffers for task stacks (allocated statically, no heap)
-pub static mut TASK_A_STACK: [u8; 1024] = [0; 1024];
-pub static mut TASK_B_STACK: [u8; 1024] = [0; 1024];
-pub static mut TASK_C_STACK: [u8; 1024] = [0; 1024];
-pub static mut TASK_WD_STACK: [u8; 1024] = [0; 1024];
+pub static mut TASK_A_STACK: Stack = Stack([0; 1024]);
+pub static mut TASK_B_STACK: Stack = Stack([0; 1024]);
+pub static mut TASK_C_STACK: Stack = Stack([0; 1024]);
+pub static mut TASK_WD_STACK: Stack = Stack([0; 1024]);
+pub static mut IDLE_STACK_0: Stack = Stack([0; 1024]);
+pub static mut IDLE_STACK_1: Stack = Stack([0; 1024]);
 
 // Dedicated Kernel Interrupt Stacks (M-mode execution per core)
-pub static mut KERNEL_STACK_0: [u8; 1024] = [0; 1024];
-pub static mut KERNEL_STACK_1: [u8; 1024] = [0; 1024];
-pub static mut HSM_STACK: [u8; 1024] = [0; 1024];
+pub static mut KERNEL_STACK_0: Stack = Stack([0; 1024]);
+pub static mut KERNEL_STACK_1: Stack = Stack([0; 1024]);
+pub static mut HSM_STACK: Stack = Stack([0; 1024]);
 
 // Synchronization primitives for SMP execution
 pub static BOOT_BARRIER: AtomicBool = AtomicBool::new(false);
+pub static CORE_1_READY: AtomicBool = AtomicBool::new(false);
+pub static mut TEST_COUNTER: u32 = 0;
 #[no_mangle]
 pub static MUTEX_LOCK: kernel::Spinlock = kernel::Spinlock::new();
 
@@ -205,24 +340,32 @@ pub fn kmain() -> ! {
 
             // Initialize task contexts on their respective stacks
             let sp_wd = TaskControlBlock::initialize_stack(
-                &mut *core::ptr::addr_of_mut!(TASK_WD_STACK),
+                &mut (*core::ptr::addr_of_mut!(TASK_WD_STACK)).0,
                 watchdog_task,
             );
             let sp_a = TaskControlBlock::initialize_stack(
-                &mut *core::ptr::addr_of_mut!(TASK_A_STACK),
+                &mut (*core::ptr::addr_of_mut!(TASK_A_STACK)).0,
                 task_a,
             );
             let sp_b = TaskControlBlock::initialize_stack(
-                &mut *core::ptr::addr_of_mut!(TASK_B_STACK),
+                &mut (*core::ptr::addr_of_mut!(TASK_B_STACK)).0,
                 task_b,
             );
             let sp_c = TaskControlBlock::initialize_stack(
-                &mut *core::ptr::addr_of_mut!(TASK_C_STACK),
+                &mut (*core::ptr::addr_of_mut!(TASK_C_STACK)).0,
                 task_c,
             );
             let sp_hsm = TaskControlBlock::initialize_stack(
-                &mut *core::ptr::addr_of_mut!(HSM_STACK),
+                &mut (*core::ptr::addr_of_mut!(HSM_STACK)).0,
                 security::hsm_task,
+            );
+            let sp_idle0 = TaskControlBlock::initialize_stack(
+                &mut (*core::ptr::addr_of_mut!(IDLE_STACK_0)).0,
+                idle_task,
+            );
+            let sp_idle1 = TaskControlBlock::initialize_stack(
+                &mut (*core::ptr::addr_of_mut!(IDLE_STACK_1)).0,
+                idle_task,
             );
 
             let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
@@ -297,6 +440,15 @@ pub fn kmain() -> ! {
                 ],
             });
 
+            scheds[0].register_task(TaskControlBlock {
+                saved_sp: sp_idle0,
+                priority: 31,
+                active_priority: 31,
+                state: TaskState::Ready,
+                name: "Idle 0",
+                capabilities: [Capability::None; 8],
+            });
+
             // Core 1 Scheduler registration (Task B + Task C)
             scheds[1].register_task(TaskControlBlock {
                 saved_sp: sp_b,
@@ -342,13 +494,27 @@ pub fn kmain() -> ! {
                 ],
             });
 
+            scheds[1].register_task(TaskControlBlock {
+                saved_sp: sp_idle1,
+                priority: 31,
+                active_priority: 31,
+                state: TaskState::Ready,
+                name: "Idle 1",
+                capabilities: [Capability::None; 8],
+            });
+
             // Configure timer tick interrupts
-            init_timer();
+            init_timer(hart_id);
 
             defmt::info!("Core 0: Heartbeat timer armed. Releasing Core 1...");
 
             // Release Core 1 boot barrier
             BOOT_BARRIER.store(true, Ordering::Release);
+
+            // Spin-wait until Core 1 is ready before starting Core 0 scheduler execution
+            while !CORE_1_READY.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
 
             // Start Core 0 scheduler execution
             scheds[0].start_first_task(0);
@@ -369,9 +535,12 @@ pub fn kmain() -> ! {
             init_memory_protection();
 
             // Initialize local Core 1 timer
-            init_timer();
+            init_timer(hart_id);
 
             defmt::info!("Core 1: Booted and timer armed. Launching scheduler...");
+
+            // Signal that Core 1 is ready
+            CORE_1_READY.store(true, Ordering::Release);
 
             // Start Core 1 scheduler execution
             let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
@@ -542,7 +711,7 @@ fn read_cycles() -> u32 {
     {
         let cycles: u32;
         unsafe {
-            core::arch::asm!("csrr {0}, mcycle", out(reg) cycles);
+            core::arch::asm!("csrr {0}, cycle", out(reg) cycles);
         }
         cycles
     }
@@ -556,7 +725,10 @@ fn read_cycles() -> u32 {
 fn yield_now() {
     #[cfg(not(kani))]
     unsafe {
-        core::arch::asm!("li a7, 1", "ecall");
+        core::arch::asm!(
+            "ecall",
+            in("a7") 1usize,
+        );
     }
 }
 
@@ -565,10 +737,9 @@ fn sleep_ticks(ticks: usize) {
     #[cfg(not(kani))]
     unsafe {
         core::arch::asm!(
-            "li a7, 2",
-            "mv a0, {}",
             "ecall",
-            in(reg) ticks
+            in("a7") 2usize,
+            in("a0") ticks,
         );
     }
 }
@@ -578,10 +749,9 @@ fn lock_mutex(idx: usize) {
     #[cfg(not(kani))]
     unsafe {
         core::arch::asm!(
-            "li a7, 3",
-            "mv a0, {}",
             "ecall",
-            in(reg) idx
+            in("a7") 3usize,
+            in("a0") idx,
         );
     }
 }
@@ -591,10 +761,9 @@ fn unlock_mutex(idx: usize) {
     #[cfg(not(kani))]
     unsafe {
         core::arch::asm!(
-            "li a7, 4",
-            "mv a0, {}",
             "ecall",
-            in(reg) idx
+            in("a7") 4usize,
+            in("a0") idx,
         );
     }
 }
@@ -603,7 +772,10 @@ fn unlock_mutex(idx: usize) {
 fn watchdog_checkin() {
     #[cfg(not(kani))]
     unsafe {
-        core::arch::asm!("li a7, 5", "ecall");
+        core::arch::asm!(
+            "ecall",
+            in("a7") 5usize,
+        );
     }
 }
 
@@ -614,15 +786,11 @@ pub(crate) fn sys_send(cap_idx: usize, msg: &[u8]) -> isize {
         let ret: isize;
         unsafe {
             core::arch::asm!(
-                "li a7, 6",
-                "mv a0, {0}",
-                "mv a1, {1}",
-                "mv a2, {2}",
                 "ecall",
-                in(reg) cap_idx,
-                in(reg) msg.as_ptr() as usize,
-                in(reg) msg.len(),
-                lateout("a0") ret
+                in("a7") 6usize,
+                inout("a0") cap_idx => ret,
+                in("a1") msg.as_ptr() as usize,
+                in("a2") msg.len(),
             );
         }
         ret
@@ -640,15 +808,11 @@ pub(crate) fn sys_recv(cap_idx: usize, buf: &mut [u8]) -> isize {
         let ret: isize;
         unsafe {
             core::arch::asm!(
-                "li a7, 7",
-                "mv a0, {0}",
-                "mv a1, {1}",
-                "mv a2, {2}",
                 "ecall",
-                in(reg) cap_idx,
-                in(reg) buf.as_mut_ptr() as usize,
-                in(reg) buf.len(),
-                lateout("a0") ret
+                in("a7") 7usize,
+                inout("a0") cap_idx => ret,
+                in("a1") buf.as_mut_ptr() as usize,
+                in("a2") buf.len(),
             );
         }
         ret
@@ -659,17 +823,33 @@ pub(crate) fn sys_recv(cap_idx: usize, buf: &mut [u8]) -> isize {
     }
 }
 
+/// Syscall wrapper to terminate a task by priority.
+fn sys_terminate_task(prio: usize) -> isize {
+    #[cfg(not(kani))]
+    {
+        let ret: isize;
+        unsafe {
+            core::arch::asm!(
+                "ecall",
+                in("a7") 8usize,
+                inout("a0") prio => ret,
+            );
+        }
+        ret
+    }
+    #[cfg(kani)]
+    {
+        let _ = prio;
+        0
+    }
+}
+
 /// Dedicated Watchdog Task (Highest Priority, Priority 0)
 extern "C" fn watchdog_task() -> ! {
     defmt::info!("Watchdog Task (Priority 0) started.");
 
-    // Initialize check-in ticks to the current system tick to avoid false positives at boot
-    let current_tick = crate::trap::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-    unsafe {
-        let last_checkins = &mut *core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK);
-        last_checkins[1] = current_tick; // Task A
-        last_checkins[2] = current_tick; // Task B
-    }
+    // Let tasks initialize and perform their first check-in within a boot grace period.
+    // We leave LAST_CHECKIN_TICK initialized to 0, which signifies "not checked in yet".
 
     let mut loop_count = 0u32;
 
@@ -694,8 +874,13 @@ extern "C" fn watchdog_task() -> ! {
             if tcb.state != TaskState::Terminated {
                 let last_checkin =
                     unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[1] };
-                let elapsed = current_tick.wrapping_sub(last_checkin);
-                if elapsed > 200 {
+                let elapsed = if last_checkin == 0 {
+                    current_tick
+                } else {
+                    current_tick.wrapping_sub(last_checkin)
+                };
+                let timeout = if last_checkin == 0 { 1000 } else { 200 };
+                if elapsed > timeout {
                     check_failed = true;
                     failed_task = tcb.name;
                 }
@@ -707,8 +892,31 @@ extern "C" fn watchdog_task() -> ! {
             if tcb.state != TaskState::Terminated {
                 let last_checkin =
                     unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[2] };
-                let elapsed = current_tick.wrapping_sub(last_checkin);
-                if elapsed > 200 {
+                let elapsed = if last_checkin == 0 {
+                    current_tick
+                } else {
+                    current_tick.wrapping_sub(last_checkin)
+                };
+                let timeout = if last_checkin == 0 { 1000 } else { 200 };
+                if elapsed > timeout {
+                    check_failed = true;
+                    failed_task = tcb.name;
+                }
+            }
+        }
+
+        // Check Task C (prio 3 - Test Runner)
+        if let Some(tcb) = &scheds[1].task_table[3] {
+            if tcb.state != TaskState::Terminated {
+                let last_checkin =
+                    unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[3] };
+                let elapsed = if last_checkin == 0 {
+                    current_tick
+                } else {
+                    current_tick.wrapping_sub(last_checkin)
+                };
+                let timeout = if last_checkin == 0 { 1000 } else { 200 };
+                if elapsed > timeout {
                     check_failed = true;
                     failed_task = tcb.name;
                 }
@@ -716,22 +924,34 @@ extern "C" fn watchdog_task() -> ! {
         }
 
         if check_failed {
+            let failed_prio = if failed_task == "Task A" { 1 } else if failed_task == "Task B" { 2 } else { 3 };
             defmt::error!(
                 "WATCHDOG FAILURE: Task '{}' failed to check in! (Current Tick: {}, Last Check-in: {})",
                 failed_task,
                 current_tick,
-                unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[if failed_task == "Task A" { 1 } else { 2 }] }
+                unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[failed_prio] }
             );
 
-            // Print final telemetry dashboard
-            crate::kernel::dump_metrics();
+            defmt::warn!("WATCHDOG: Terminating task '{}' to restore availability.", failed_task);
+            sys_terminate_task(failed_prio);
+        }
 
-            defmt::error!("Safe-parking CPU. Disabling interrupts.");
-            unsafe {
-                // Disable interrupts (clear MIE bit in mstatus)
-                core::arch::asm!("csrci mstatus, 8");
-                loop {
-                    core::arch::asm!("wfi");
+        // Check if Task C needs to be restarted for the next test
+        unsafe {
+            let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
+            if let Some(ref tcb) = scheds[1].task_table[3] {
+                if tcb.state == TaskState::Terminated && TEST_COUNTER < 2 {
+                    TEST_COUNTER += 1;
+                    let sp_c = TaskControlBlock::initialize_stack(
+                        &mut (*core::ptr::addr_of_mut!(TASK_C_STACK)).0,
+                        task_c,
+                    );
+                    if let Some(ref mut tcb_mut) = scheds[1].task_table[3] {
+                        tcb_mut.saved_sp = sp_c;
+                        tcb_mut.state = TaskState::Ready;
+                        defmt::info!("[WATCHDOG] Resetting Task C stack and restarting to run Test {}", TEST_COUNTER + 1);
+                    }
+                    (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[3] = 0;
                 }
             }
         }
@@ -787,7 +1007,7 @@ extern "C" fn task_a() -> ! {
         if send_res >= 0 && recv_res >= 0 {
             defmt::info!(
                 "Task A: Received signature from HSM: {:X} (Overhead: {} cycles)",
-                computed_tag,
+                HexSlice(&computed_tag),
                 end_cycles.wrapping_sub(start_cycles)
             );
             // Verify signature using the helper function (uses endpoints 2 and 3)
@@ -834,7 +1054,7 @@ extern "C" fn task_b() -> ! {
         // Receive synchronous IPC message from Task A
         let res = sys_recv(0, &mut rx_buf);
         if res >= 0 {
-            defmt::info!("Task B received IPC payload: {:X}", rx_buf);
+            defmt::info!("Task B received IPC payload: {:X}", HexSlice(&rx_buf));
         } else {
             defmt::error!("Task B IPC receive failed: {}", res);
         }
@@ -859,36 +1079,53 @@ extern "C" fn task_b() -> ! {
 
 /// Task C Entry point (Low Priority & Fault Injection target)
 extern "C" fn task_c() -> ! {
-    defmt::info!("Task C (Low) starting. Locking Mutex 0...");
-    lock_mutex(0);
-    defmt::info!("Task C (Low) acquired Mutex 0. Yielding...");
-    yield_now(); // Yield to let Task A preempt us and block on Mutex 0
+    let tc = unsafe { TEST_COUNTER };
+    
+    if tc == 0 {
+        defmt::info!("Task C (Low) starting. Locking Mutex 0...");
+        lock_mutex(0);
+        defmt::info!("Task C (Low) acquired Mutex 0. Yielding...");
+        yield_now(); // Yield to let Task A preempt us and block on Mutex 0
 
-    defmt::info!("Task C (Low) resumed. Releasing Mutex 0...");
-    unlock_mutex(0);
-    defmt::info!("Task C (Low) released Mutex 0. Yielding...");
-    yield_now();
+        defmt::info!("Task C (Low) resumed. Releasing Mutex 0...");
+        unlock_mutex(0);
+        defmt::info!("Task C (Low) released Mutex 0. Yielding...");
+        yield_now();
 
-    // --- FAULT INJECTION ---
-    defmt::info!("Task C (Low) injecting fault: attempting illegal read of Task A's stack...");
+        // --- FAULT INJECTION TEST 1: PMP Stack Violation ---
+        defmt::info!("[TEST RUNNER] Running Test 1: PMP Stack Violation (Load Access Fault)...");
+        let illegal_ptr = core::ptr::addr_of!(TASK_A_STACK) as *const u8;
+        let _val = unsafe { illegal_ptr.read_volatile() };
+        
+        defmt::error!("[TEST RUNNER] Test 1 failed to contain fault!");
+    } else if tc == 1 {
+        // --- FAULT INJECTION TEST 2: Privilege Violation (Illegal Instruction) ---
+        defmt::info!("[TEST RUNNER] Running Test 2: Privilege Violation (Illegal Instruction)...");
+        unsafe {
+            core::arch::asm!("csrw mstatus, zero");
+        }
+        
+        defmt::error!("[TEST RUNNER] Test 2 failed to contain fault!");
+    } else {
+        // --- FAULT INJECTION TEST 3: Watchdog Timeout (Temporal Isolation) ---
+        defmt::info!("[TEST RUNNER] Running Test 3: Watchdog Timeout (Temporal Isolation)...");
+        watchdog_checkin();
+        loop {
+            yield_now();
+        }
+    }
 
-    // This read should instantly trigger a PMP Load Access Fault (cause 5)
-    let illegal_ptr = core::ptr::addr_of!(TASK_A_STACK) as *const u8;
-    let _val = unsafe { illegal_ptr.read_volatile() };
-
-    // We should never reach this line because the kernel terminates the task
-    defmt::error!("Task C (Low) failed to isolate! Accessed forbidden memory.");
     loop {
         yield_now();
     }
 }
 
 /// Configure the Machine-mode Timer.
-unsafe fn init_timer() {
+unsafe fn init_timer(hart_id: usize) {
     #[cfg(not(kani))]
     {
         let clint_mtime = 0x0200_BFF8 as *const u64;
-        let clint_mtimecmp = 0x0200_4000 as *mut u64;
+        let clint_mtimecmp = (0x0200_4000 + hart_id * 8) as *mut u64;
         clint_mtimecmp.write_volatile(clint_mtime.read_volatile() + 40_000);
 
         let mie: usize;
@@ -898,6 +1135,9 @@ unsafe fn init_timer() {
         let mstatus: usize;
         core::arch::asm!("csrr {}, mstatus", out(reg) mstatus);
         core::arch::asm!("csrw mstatus, {}", in(reg) mstatus | (1 << 3));
+
+        // Enable User-mode access to the cycle counter (CY bit)
+        core::arch::asm!("csrw mcounteren, {}", in(reg) 1usize);
     }
 }
 
@@ -918,4 +1158,19 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     loop {
         unsafe { core::arch::asm!("wfi") };
     }
+}
+
+#[no_mangle]
+pub extern "C" fn idle_task() -> ! {
+    loop {
+        unsafe {
+            core::arch::asm!("nop");
+        }
+    }
+}
+
+#[no_mangle]
+#[allow(non_snake_case)]
+pub extern "Rust" fn _mp_hook(hartid: usize) -> bool {
+    hartid == 0
 }
