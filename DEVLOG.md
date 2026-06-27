@@ -278,3 +278,19 @@
 - **Metric Captured**:
   - Secure Boot verification is executed successfully on boot. Tampered payload verification successfully rejects corrupted kernels. HMAC keys are fully isolated, and frame signing runs in under 4,500 cycles over IPC. Binary .text size is 26,364 bytes (under 32 KB budget).
 
+## Milestone 20 — Automated U-Mode Fault Injection & Containment Suite
+- **Goal**: Implement an automated sequential test runner in User Mode to trigger PMP memory access violations, illegal instructions, and watchdog check-in timeouts. Implement exception recovery and waker waken logic in M-mode, and enable watchdog task to restart terminated tasks to demonstrate high availability and temporal isolation.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1*: Indexing `scheds` directly inside Syscall 8 triggered borrow checker errors because of the active destructuring borrow on `SCHEDULERS`.
+    - *Fix*: Access `sched0` and `sched1` references directly instead of indexing the `scheds` slice inside the syscall handler block.
+  - *Issue 2*: Mutex waker recovery priority comparison in exception handler selected the lower priority task instead of the highest priority (smaller priority number).
+    - *Fix*: Changed `w_prio > curr_w_prio` to `w_prio < curr_w_prio`.
+- **Time Log**:
+  - Implementing Syscall 8 and waker recovery: 45m
+  - Writing sequential fault injector in `task_c`: 35m
+  - Implementing Watchdog Task recovery/restart logic: 40m
+  - Resolving borrow-checker conflicts and priority comparison bugs: 30m
+- **Metric Captured**:
+  - Fault isolation and waker recovery compiles and functions cleanly. Verification tests successfully isolate PMP faults, illegal instructions, and restart the test runner sequentially, maintaining 100% core scheduler availability.
+
+
