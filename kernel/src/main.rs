@@ -112,14 +112,8 @@ pub mod defmt {
         };
     }
 
-    pub use crate::{
-        rtt_info as info,
-        rtt_warn as warn,
-        rtt_error as error,
-        rtt_trace as trace,
-    };
+    pub use crate::{rtt_error as error, rtt_info as info, rtt_trace as trace, rtt_warn as warn};
 }
-
 
 #[no_mangle]
 #[inline(never)]
@@ -177,6 +171,14 @@ pub static CORE_1_READY: AtomicBool = AtomicBool::new(false);
 pub static mut TEST_COUNTER: u32 = 0;
 #[no_mangle]
 pub static MUTEX_LOCK: kernel::Spinlock = kernel::Spinlock::new();
+
+/// Guards every cross-core access to `SCHEDULERS`. Trap handling on the two
+/// harts runs concurrently, and several syscalls (IPC rendezvous, mutex
+/// unlock's priority scan, task termination, fault recovery) read or write
+/// the *other* hart's task table directly, so this must be held for the
+/// full duration of any such access, not just the pointer fetch.
+#[no_mangle]
+pub static SCHED_LOCK: kernel::Spinlock = kernel::Spinlock::new();
 
 // Kernel Mutex representation
 pub struct KernelMutex {
@@ -862,69 +864,122 @@ extern "C" fn watchdog_task() -> ! {
         // Check health of monitored ready/running tasks
         extern "Rust" {
             static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
+            static SCHED_LOCK: kernel::Spinlock;
         }
 
-        let scheds = unsafe { &mut *core::ptr::addr_of_mut!(SCHEDULERS) };
+        // Watchdog runs on hart 0 but inspects and mutates hart 1's task
+        // table (Task B, Task C) directly, concurrently with hart 1's own
+        // trap handler. Must hold the same lock trap.rs holds for any
+        // cross-core SCHEDULERS access, or this races exactly like the
+        // trap-handler call sites did.
+        //
+        // Watchdog is U-mode task code (registered on hart 0's scheduler and
+        // never migrated), so it cannot read `mhartid` itself — that CSR is
+        // Machine-mode-only and reading it from U-mode is an illegal
+        // instruction. Pass the statically-known hart id instead.
+        let _sched_guard = unsafe { SCHED_LOCK.lock_guard(0) };
 
         let mut check_failed = false;
         let mut failed_task = "";
 
-        // Check Task A (prio 1)
-        if let Some(tcb) = &scheds[0].task_table[1] {
-            if tcb.state != TaskState::Terminated {
-                let last_checkin =
-                    unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[1] };
-                let elapsed = if last_checkin == 0 {
-                    current_tick
-                } else {
-                    current_tick.wrapping_sub(last_checkin)
-                };
-                let timeout = if last_checkin == 0 { 1000 } else { 200 };
-                if elapsed > timeout {
-                    check_failed = true;
-                    failed_task = tcb.name;
+        // Scoped tightly so this `&mut` reference into SCHEDULERS is fully
+        // dropped before `sys_terminate_task` below issues its own `ecall`.
+        // That syscall re-enters `trap_handler`, which takes its own
+        // independent `&mut` reference to the same `static mut`; letting
+        // this one stay "live" (per NLL, un-scoped locals are live until
+        // last use, not until the block ends) across that call would be two
+        // simultaneous mutable aliases to the same memory, which is
+        // undefined behavior regardless of the fact that SCHED_LOCK already
+        // serializes the underlying hardware access.
+        {
+            let scheds = unsafe { &mut *core::ptr::addr_of_mut!(SCHEDULERS) };
+
+            // Check Task A (prio 1)
+            if let Some(tcb) = &scheds[0].task_table[1] {
+                if tcb.state != TaskState::Terminated {
+                    let last_checkin =
+                        unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[1] };
+                    let elapsed = if last_checkin == 0 {
+                        current_tick
+                    } else {
+                        current_tick.wrapping_sub(last_checkin)
+                    };
+                    let timeout = if last_checkin == 0 { 1000 } else { 200 };
+                    if elapsed > timeout {
+                        check_failed = true;
+                        failed_task = tcb.name;
+                    }
                 }
             }
-        }
 
-        // Check Task B (prio 2)
-        if let Some(tcb) = &scheds[1].task_table[2] {
-            if tcb.state != TaskState::Terminated {
-                let last_checkin =
-                    unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[2] };
-                let elapsed = if last_checkin == 0 {
-                    current_tick
-                } else {
-                    current_tick.wrapping_sub(last_checkin)
-                };
-                let timeout = if last_checkin == 0 { 1000 } else { 200 };
-                if elapsed > timeout {
-                    check_failed = true;
-                    failed_task = tcb.name;
+            // Check Task B (prio 2)
+            if let Some(tcb) = &scheds[1].task_table[2] {
+                if tcb.state != TaskState::Terminated {
+                    let last_checkin =
+                        unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[2] };
+                    let elapsed = if last_checkin == 0 {
+                        current_tick
+                    } else {
+                        current_tick.wrapping_sub(last_checkin)
+                    };
+                    let timeout = if last_checkin == 0 { 1000 } else { 200 };
+                    if elapsed > timeout {
+                        check_failed = true;
+                        failed_task = tcb.name;
+                    }
                 }
             }
-        }
 
-        // Check Task C (prio 3 - Test Runner)
-        if let Some(tcb) = &scheds[1].task_table[3] {
-            if tcb.state != TaskState::Terminated {
-                let last_checkin =
-                    unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[3] };
-                let elapsed = if last_checkin == 0 {
-                    current_tick
-                } else {
-                    current_tick.wrapping_sub(last_checkin)
-                };
-                let timeout = if last_checkin == 0 { 1000 } else { 200 };
-                if elapsed > timeout {
-                    check_failed = true;
-                    failed_task = tcb.name;
+            // Check Task C (prio 3 - Test Runner)
+            if let Some(tcb) = &scheds[1].task_table[3] {
+                if tcb.state != TaskState::Terminated {
+                    let last_checkin =
+                        unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[3] };
+                    let elapsed = if last_checkin == 0 {
+                        current_tick
+                    } else {
+                        current_tick.wrapping_sub(last_checkin)
+                    };
+                    let timeout = if last_checkin == 0 { 1000 } else { 200 };
+                    if elapsed > timeout {
+                        check_failed = true;
+                        failed_task = tcb.name;
+                    }
+                }
+            }
+
+            // Check HSM Task (prio 4). Its own fault path (e.g. a contained
+            // exception inside the SHA-256 compression routine) terminates
+            // it directly rather than via a missed check-in, but this still
+            // catches a genuine hang.
+            if let Some(tcb) = &scheds[0].task_table[4] {
+                if tcb.state != TaskState::Terminated {
+                    let last_checkin =
+                        unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[4] };
+                    let elapsed = if last_checkin == 0 {
+                        current_tick
+                    } else {
+                        current_tick.wrapping_sub(last_checkin)
+                    };
+                    let timeout = if last_checkin == 0 { 1000 } else { 200 };
+                    if elapsed > timeout {
+                        check_failed = true;
+                        failed_task = tcb.name;
+                    }
                 }
             }
         }
 
         if check_failed {
-            let failed_prio = if failed_task == "Task A" { 1 } else if failed_task == "Task B" { 2 } else { 3 };
+            let failed_prio = if failed_task == "Task A" {
+                1
+            } else if failed_task == "Task B" {
+                2
+            } else if failed_task == "HSM Task" {
+                4
+            } else {
+                3
+            };
             defmt::error!(
                 "WATCHDOG FAILURE: Task '{}' failed to check in! (Current Tick: {}, Last Check-in: {})",
                 failed_task,
@@ -932,7 +987,10 @@ extern "C" fn watchdog_task() -> ! {
                 unsafe { (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[failed_prio] }
             );
 
-            defmt::warn!("WATCHDOG: Terminating task '{}' to restore availability.", failed_task);
+            defmt::warn!(
+                "WATCHDOG: Terminating task '{}' to restore availability.",
+                failed_task
+            );
             sys_terminate_task(failed_prio);
         }
 
@@ -949,9 +1007,36 @@ extern "C" fn watchdog_task() -> ! {
                     if let Some(ref mut tcb_mut) = scheds[1].task_table[3] {
                         tcb_mut.saved_sp = sp_c;
                         tcb_mut.state = TaskState::Ready;
-                        defmt::info!("[WATCHDOG] Resetting Task C stack and restarting to run Test {}", TEST_COUNTER + 1);
+                        defmt::info!(
+                            "[WATCHDOG] Resetting Task C stack and restarting to run Test {}",
+                            TEST_COUNTER + 1
+                        );
                     }
                     (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[3] = 0;
+                }
+            }
+        }
+
+        // HSM Task has no "next test" concept like Task C — restart it
+        // unconditionally whenever it's found terminated (e.g. after a
+        // contained SHA-256 fault), so Task A's future signing requests
+        // don't block forever waiting for a partition that no longer exists.
+        unsafe {
+            let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
+            if let Some(ref tcb) = scheds[0].task_table[4] {
+                if tcb.state == TaskState::Terminated {
+                    let sp_hsm = TaskControlBlock::initialize_stack(
+                        &mut (*core::ptr::addr_of_mut!(HSM_STACK)).0,
+                        security::hsm_task,
+                    );
+                    if let Some(ref mut tcb_mut) = scheds[0].task_table[4] {
+                        tcb_mut.saved_sp = sp_hsm;
+                        tcb_mut.state = TaskState::Ready;
+                        defmt::info!(
+                            "[WATCHDOG] Resetting HSM Task stack and restarting partition"
+                        );
+                    }
+                    (*core::ptr::addr_of_mut!(crate::trap::LAST_CHECKIN_TICK))[4] = 0;
                 }
             }
         }
@@ -1080,7 +1165,7 @@ extern "C" fn task_b() -> ! {
 /// Task C Entry point (Low Priority & Fault Injection target)
 extern "C" fn task_c() -> ! {
     let tc = unsafe { TEST_COUNTER };
-    
+
     if tc == 0 {
         defmt::info!("Task C (Low) starting. Locking Mutex 0...");
         lock_mutex(0);
@@ -1096,7 +1181,7 @@ extern "C" fn task_c() -> ! {
         defmt::info!("[TEST RUNNER] Running Test 1: PMP Stack Violation (Load Access Fault)...");
         let illegal_ptr = core::ptr::addr_of!(TASK_A_STACK) as *const u8;
         let _val = unsafe { illegal_ptr.read_volatile() };
-        
+
         defmt::error!("[TEST RUNNER] Test 1 failed to contain fault!");
     } else if tc == 1 {
         // --- FAULT INJECTION TEST 2: Privilege Violation (Illegal Instruction) ---
@@ -1104,7 +1189,7 @@ extern "C" fn task_c() -> ! {
         unsafe {
             core::arch::asm!("csrw mstatus, zero");
         }
-        
+
         defmt::error!("[TEST RUNNER] Test 2 failed to contain fault!");
     } else {
         // --- FAULT INJECTION TEST 3: Watchdog Timeout (Temporal Isolation) ---

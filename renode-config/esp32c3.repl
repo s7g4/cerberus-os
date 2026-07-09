@@ -1,12 +1,12 @@
 // esp32c3.repl - Renode platform definition for Cerberus-OS
 
 cpu0: CPU.RiscV32 @ sysbus
-    cpuType: "rv32imac"
+    cpuType: "rv32imac_zicsr_zifencei"
     privilegeArchitecture: PrivilegeArchitecture.Priv1_11
     hartId: 0
 
 cpu1: CPU.RiscV32 @ sysbus
-    cpuType: "rv32imac"
+    cpuType: "rv32imac_zicsr_zifencei"
     privilegeArchitecture: PrivilegeArchitecture.Priv1_11
     hartId: 1
 

@@ -20,6 +20,15 @@ sysbus.segger_rtt CreateFileBackend @rtt_output.log true
 
 # Define the custom Python script for RISC-V RTT
 set rtt_script """
+import threading
+
+_rtt_write_lock = threading.Lock()
+# Opened once and kept open for the life of the emulation instead of
+# re-opening on every telemetry event (task swaps/IPC/faults can fire
+# hundreds of times a second) - re-opening per write was the dominant cost
+# in long runs.
+_telemetry_file = open("telemetry.bin", "ab")
+
 def mc_setup_segger_rtt():
     bus = monitor.Machine.SystemBus
     console = None
@@ -29,10 +38,19 @@ def mc_setup_segger_rtt():
             break
 
     def write(cpu, _):
+        channel = cpu.GetRegister(10).RawValue  # a0 is register 10
         pointer = cpu.GetRegister(11).RawValue  # a1 is register 11
         length = cpu.GetRegister(12).RawValue   # a2 is register 12
-        for i in range(length):
-            console.DisplayChar(bus.ReadByte(pointer + i))
+        # Read the full payload before touching any shared output so that a
+        # concurrent write from the other hart can't interleave mid-message.
+        data = bytearray(bus.ReadByte(pointer + i) for i in range(length))
+        with _rtt_write_lock:
+            if channel == 1:
+                _telemetry_file.write(data)
+                _telemetry_file.flush()
+            else:
+                for b in data:
+                    console.DisplayChar(b)
 
     for cpu in bus.GetCPUs():
         found, addresses = bus.TryGetAllSymbolAddresses("SEGGER_RTT_WriteNoLock", cpu)

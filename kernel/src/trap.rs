@@ -2,8 +2,8 @@
 
 #![allow(unused_variables)]
 
-use core::sync::atomic::{AtomicU32, Ordering};
 use crate::defmt;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Master clock counter incremented on every timer interrupt.
 pub static TICK_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -71,7 +71,9 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
             // Perform context switch if a different task is ready
             extern "Rust" {
                 static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
+                static SCHED_LOCK: crate::kernel::spinlock::Spinlock;
             }
+            let _sched_guard = SCHED_LOCK.lock_guard(hart_id);
             let sched = &mut (*core::ptr::addr_of_mut!(SCHEDULERS))[hart_id];
 
             // Scan and wake tasks blocked on ticks
@@ -85,18 +87,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                 }
             }
 
-            if let Some((old_sp_ptr, new_sp)) = sched.schedule(true) {
-                // Save the stack pointer of the outgoing task
-                old_sp_ptr.write_volatile(current_sp);
-                // Load the new stack pointer
-                current_sp = new_sp;
-
-                // Reprogram PMP stack sandboxing rules for the incoming task
-                let active_idx = sched.current_partition_idx;
-                if let Some(new_tcb) = &sched.task_table[active_idx] {
-                    crate::memory::reprogram_pmp_stack(new_tcb.name);
-                }
-            }
+            switch_task(sched, &mut current_sp, true);
         }
         SOFTWARE_INTERRUPT => {
             // Clear Core Local Software Interrupt pending bit
@@ -106,17 +97,11 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
             // Force a reschedule check on Software Interrupt
             extern "Rust" {
                 static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
+                static SCHED_LOCK: crate::kernel::spinlock::Spinlock;
             }
+            let _sched_guard = SCHED_LOCK.lock_guard(hart_id);
             let sched = &mut (*core::ptr::addr_of_mut!(SCHEDULERS))[hart_id];
-            if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
-                old_sp_ptr.write_volatile(current_sp);
-                current_sp = new_sp;
-
-                let active_idx = sched.current_partition_idx;
-                if let Some(new_tcb) = &sched.task_table[active_idx] {
-                    crate::memory::reprogram_pmp_stack(new_tcb.name);
-                }
-            }
+            switch_task(sched, &mut current_sp, false);
         }
         ECALL_UMODE => {
             // Read registers from user stack frame
@@ -132,24 +117,20 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     // Syscall 1: Cooperative Yield
                     extern "Rust" {
                         static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
+                        static SCHED_LOCK: crate::kernel::spinlock::Spinlock;
                     }
+                    let _sched_guard = SCHED_LOCK.lock_guard(hart_id);
                     let sched = &mut (*core::ptr::addr_of_mut!(SCHEDULERS))[hart_id];
-                    if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
-                        old_sp_ptr.write_volatile(current_sp);
-                        current_sp = new_sp;
-
-                        let active_idx = sched.current_partition_idx;
-                        if let Some(new_tcb) = &sched.task_table[active_idx] {
-                            crate::memory::reprogram_pmp_stack(new_tcb.name);
-                        }
-                    }
+                    switch_task(sched, &mut current_sp, false);
                 }
                 2 => {
                     // Syscall 2: Sleep Ticks
                     let ticks = frame.add(6).read_volatile(); // a0
                     extern "Rust" {
                         static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
+                        static SCHED_LOCK: crate::kernel::spinlock::Spinlock;
                     }
+                    let _sched_guard = SCHED_LOCK.lock_guard(hart_id);
                     let sched = &mut (*core::ptr::addr_of_mut!(SCHEDULERS))[hart_id];
                     let running_idx = sched.current_partition_idx;
 
@@ -160,14 +141,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     };
 
                     // Reschedule because the current task is now blocked
-                    if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
-                        old_sp_ptr.write_volatile(current_sp);
-                        current_sp = new_sp;
-                        let active_idx = sched.current_partition_idx;
-                        if let Some(new_tcb) = &sched.task_table[active_idx] {
-                            crate::memory::reprogram_pmp_stack(new_tcb.name);
-                        }
-                    }
+                    switch_task(sched, &mut current_sp, false);
                 }
                 3 => {
                     // Syscall 3: Lock Mutex
@@ -176,7 +150,9 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                         static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
                         static mut MUTEXES: [Option<crate::KernelMutex>; 8];
                         static MUTEX_LOCK: crate::kernel::spinlock::Spinlock;
+                        static SCHED_LOCK: crate::kernel::spinlock::Spinlock;
                     }
+                    let _sched_guard = SCHED_LOCK.lock_guard(hart_id);
                     let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
                     let sched = &mut scheds[hart_id];
                     let running_idx = sched.current_partition_idx;
@@ -184,7 +160,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     let mut lock_granted = false;
                     let mut permission_denied = false;
 
-                    MUTEX_LOCK.lock();
+                    MUTEX_LOCK.lock(hart_id);
 
                     if cap_idx < 8 {
                         let tcb = sched.task_table[running_idx].as_mut().unwrap();
@@ -213,14 +189,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                     MUTEX_LOCK.unlock();
 
                                     // Reschedule because the current task is blocked
-                                    if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
-                                        old_sp_ptr.write_volatile(current_sp);
-                                        current_sp = new_sp;
-                                        let active_idx = sched.current_partition_idx;
-                                        if let Some(new_tcb) = &sched.task_table[active_idx] {
-                                            crate::memory::reprogram_pmp_stack(new_tcb.name);
-                                        }
-                                    }
+                                    switch_task(sched, &mut current_sp, false);
                                     lock_granted = true; // Handled scheduling, don't write success immediately
                                 }
                             } else {
@@ -254,7 +223,9 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                         static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
                         static mut MUTEXES: [Option<crate::KernelMutex>; 8];
                         static MUTEX_LOCK: crate::kernel::spinlock::Spinlock;
+                        static SCHED_LOCK: crate::kernel::spinlock::Spinlock;
                     }
+                    let _sched_guard = SCHED_LOCK.lock_guard(hart_id);
                     let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
                     let [ref mut sched0, ref mut sched1] = *scheds;
                     let running_idx = if hart_id == 0 {
@@ -266,7 +237,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     let mut permission_denied = false;
                     let mut unlock_success = false;
 
-                    MUTEX_LOCK.lock();
+                    MUTEX_LOCK.lock(hart_id);
 
                     if cap_idx < 8 {
                         let cap = if hart_id == 0 {
@@ -351,29 +322,8 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                 }
                                 unlock_success = true;
 
-                                // Reschedule current core
-                                let resched_result = if hart_id == 0 {
-                                    sched0.schedule(false)
-                                } else {
-                                    sched1.schedule(false)
-                                };
-                                if let Some((old_sp_ptr, new_sp)) = resched_result {
-                                    old_sp_ptr.write_volatile(current_sp);
-                                    current_sp = new_sp;
-                                    let active_idx = if hart_id == 0 {
-                                        sched0.current_partition_idx
-                                    } else {
-                                        sched1.current_partition_idx
-                                    };
-                                    let new_tcb_name = if hart_id == 0 {
-                                        sched0.task_table[active_idx].as_ref().map(|tcb| tcb.name)
-                                    } else {
-                                        sched1.task_table[active_idx].as_ref().map(|tcb| tcb.name)
-                                    };
-                                    if let Some(name) = new_tcb_name {
-                                        crate::memory::reprogram_pmp_stack(name);
-                                    }
-                                }
+                                let sched = if hart_id == 0 { sched0 } else { sched1 };
+                                switch_task(sched, &mut current_sp, false);
                             } else {
                                 MUTEX_LOCK.unlock();
                                 permission_denied = true;
@@ -397,7 +347,9 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     // Syscall 5: Watchdog Check-in
                     extern "Rust" {
                         static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
+                        static SCHED_LOCK: crate::kernel::spinlock::Spinlock;
                     }
+                    let _sched_guard = SCHED_LOCK.lock_guard(hart_id);
                     let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
                     let running_idx = scheds[hart_id].current_partition_idx;
                     let current_tick = TICK_COUNT.load(Ordering::Relaxed);
@@ -412,7 +364,9 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
 
                     extern "Rust" {
                         static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
+                        static SCHED_LOCK: crate::kernel::spinlock::Spinlock;
                     }
+                    let _sched_guard = SCHED_LOCK.lock_guard(hart_id);
                     let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
                     let [ref mut sched0, ref mut sched1] = *scheds;
                     let running_idx = if hart_id == 0 {
@@ -500,6 +454,11 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                     // Write 0 (success) to sender's frame a0
                                     frame.add(6).write_volatile(0);
 
+                                    telemetry::log_telemetry(&telemetry::TraceEvent::IpcTransfer {
+                                        endpoint: endpoint_idx,
+                                        bytes: transfer_len as u8,
+                                    });
+
                                     // Trigger software interrupt if receiver is on the other core
                                     if rx_hart != hart_id {
                                         let msip = (0x0200_0000 + rx_hart * 4) as *mut u32;
@@ -520,28 +479,8 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                 };
 
                                 // Reschedule since current task is now blocked
-                                let resched_result = if hart_id == 0 {
-                                    sched0.schedule(false)
-                                } else {
-                                    sched1.schedule(false)
-                                };
-                                if let Some((old_sp_ptr, new_sp)) = resched_result {
-                                    old_sp_ptr.write_volatile(current_sp);
-                                    current_sp = new_sp;
-                                    let active_idx = if hart_id == 0 {
-                                        sched0.current_partition_idx
-                                    } else {
-                                        sched1.current_partition_idx
-                                    };
-                                    let new_tcb_name = if hart_id == 0 {
-                                        sched0.task_table[active_idx].as_ref().map(|tcb| tcb.name)
-                                    } else {
-                                        sched1.task_table[active_idx].as_ref().map(|tcb| tcb.name)
-                                    };
-                                    if let Some(name) = new_tcb_name {
-                                        crate::memory::reprogram_pmp_stack(name);
-                                    }
-                                }
+                                let sched = if hart_id == 0 { sched0 } else { sched1 };
+                                switch_task(sched, &mut current_sp, false);
                             }
                         } else {
                             permission_denied = true;
@@ -562,7 +501,9 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
 
                     extern "Rust" {
                         static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
+                        static SCHED_LOCK: crate::kernel::spinlock::Spinlock;
                     }
+                    let _sched_guard = SCHED_LOCK.lock_guard(hart_id);
                     let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
                     let [ref mut sched0, ref mut sched1] = *scheds;
                     let running_idx = if hart_id == 0 {
@@ -650,6 +591,11 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                     // Write transfer_len (number of bytes received) to receiver's frame a0
                                     frame.add(6).write_volatile(transfer_len);
 
+                                    telemetry::log_telemetry(&telemetry::TraceEvent::IpcTransfer {
+                                        endpoint: endpoint_idx,
+                                        bytes: transfer_len as u8,
+                                    });
+
                                     // Trigger software interrupt if sender is on the other core
                                     if tx_hart != hart_id {
                                         let msip = (0x0200_0000 + tx_hart * 4) as *mut u32;
@@ -670,28 +616,8 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                 };
 
                                 // Reschedule since current task is now blocked
-                                let resched_result = if hart_id == 0 {
-                                    sched0.schedule(false)
-                                } else {
-                                    sched1.schedule(false)
-                                };
-                                if let Some((old_sp_ptr, new_sp)) = resched_result {
-                                    old_sp_ptr.write_volatile(current_sp);
-                                    current_sp = new_sp;
-                                    let active_idx = if hart_id == 0 {
-                                        sched0.current_partition_idx
-                                    } else {
-                                        sched1.current_partition_idx
-                                    };
-                                    let new_tcb_name = if hart_id == 0 {
-                                        sched0.task_table[active_idx].as_ref().map(|tcb| tcb.name)
-                                    } else {
-                                        sched1.task_table[active_idx].as_ref().map(|tcb| tcb.name)
-                                    };
-                                    if let Some(name) = new_tcb_name {
-                                        crate::memory::reprogram_pmp_stack(name);
-                                    }
-                                }
+                                let sched = if hart_id == 0 { sched0 } else { sched1 };
+                                switch_task(sched, &mut current_sp, false);
                             }
                         } else {
                             permission_denied = true;
@@ -707,42 +633,56 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                 8 => {
                     // Syscall 8: Terminate Task (takes task priority/index to terminate in a0)
                     let target_prio = frame.add(6).read_volatile();
-                    
+
                     extern "Rust" {
                         static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
                         static mut MUTEXES: [Option<crate::KernelMutex>; 8];
                         static MUTEX_LOCK: crate::kernel::spinlock::Spinlock;
+                        static SCHED_LOCK: crate::kernel::spinlock::Spinlock;
                     }
+                    let _sched_guard = SCHED_LOCK.lock_guard(hart_id);
                     let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
                     let [ref mut sched0, ref mut sched1] = *scheds;
-                    
+
                     let mut found_hart = 0;
                     let mut terminated_name: Option<&'static str> = None;
                     if target_prio < scheduler::bitmap::MAX_PARTITIONS {
                         if let Some(ref mut tcb) = sched0.task_table[target_prio] {
-                            defmt::warn!("Syscall 8: Terminating task '{}' (priority {})", tcb.name, target_prio);
+                            defmt::warn!(
+                                "Syscall 8: Terminating task '{}' (priority {})",
+                                tcb.name,
+                                target_prio
+                            );
                             tcb.state = scheduler::TaskState::Terminated;
                             terminated_name = Some(tcb.name);
                             found_hart = 0;
                         } else if let Some(ref mut tcb) = sched1.task_table[target_prio] {
-                            defmt::warn!("Syscall 8: Terminating task '{}' (priority {})", tcb.name, target_prio);
+                            defmt::warn!(
+                                "Syscall 8: Terminating task '{}' (priority {})",
+                                tcb.name,
+                                target_prio
+                            );
                             tcb.state = scheduler::TaskState::Terminated;
                             terminated_name = Some(tcb.name);
                             found_hart = 1;
                         }
                     }
-                    
+
                     if let Some(name) = terminated_name {
                         // Mutex recovery
-                        MUTEX_LOCK.lock();
+                        MUTEX_LOCK.lock(hart_id);
                         let mutexes = &mut *core::ptr::addr_of_mut!(MUTEXES);
                         for (i, mutex_opt) in mutexes.iter_mut().enumerate() {
                             if let Some(mutex) = mutex_opt {
                                 if mutex.owner_task_idx == Some(target_prio as u8) {
-                                    defmt::warn!("Releasing Mutex {} owned by terminated task '{}'", i, name);
+                                    defmt::warn!(
+                                        "Releasing Mutex {} owned by terminated task '{}'",
+                                        i,
+                                        name
+                                    );
                                     mutex.locked = false;
                                     mutex.owner_task_idx = None;
-                                    
+
                                     // Wake up highest priority waiter if any
                                     let mut highest_waiter: Option<usize> = None;
                                     for w in 0..32 {
@@ -754,9 +694,15 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                                     sched1.task_table[w].as_ref().unwrap().priority
                                                 };
                                                 let curr_w_prio = if curr_w < 2 {
-                                                    sched0.task_table[curr_w].as_ref().unwrap().priority
+                                                    sched0.task_table[curr_w]
+                                                        .as_ref()
+                                                        .unwrap()
+                                                        .priority
                                                 } else {
-                                                    sched1.task_table[curr_w].as_ref().unwrap().priority
+                                                    sched1.task_table[curr_w]
+                                                        .as_ref()
+                                                        .unwrap()
+                                                        .priority
                                                 };
                                                 if w_prio < curr_w_prio {
                                                     highest_waiter = Some(w);
@@ -766,12 +712,12 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                             }
                                         }
                                     }
-                                    
+
                                     if let Some(w) = highest_waiter {
                                         mutex.locked = true;
                                         mutex.owner_task_idx = Some(w as u8);
                                         mutex.waiters_bitmap &= !(1 << w);
-                                        
+
                                         if w < 2 {
                                             if let Some(waiter_tcb) = &mut sched0.task_table[w] {
                                                 waiter_tcb.state = scheduler::TaskState::Ready;
@@ -784,24 +730,21 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                             }
                         }
                         MUTEX_LOCK.unlock();
-                        
+
                         frame.add(6).write_volatile(0);
-                        
+
                         if found_hart != hart_id {
                             let msip = (0x0200_0000 + found_hart * 4) as *mut u32;
                             msip.write_volatile(1);
                         } else {
-                            let active_idx = if hart_id == 0 { sched0.current_partition_idx } else { sched1.current_partition_idx };
+                            let active_idx = if hart_id == 0 {
+                                sched0.current_partition_idx
+                            } else {
+                                sched1.current_partition_idx
+                            };
                             if target_prio == active_idx {
                                 let sched = if hart_id == 0 { sched0 } else { sched1 };
-                                if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
-                                    old_sp_ptr.write_volatile(current_sp);
-                                    current_sp = new_sp;
-                                    let active_idx = sched.current_partition_idx;
-                                    if let Some(new_tcb) = &sched.task_table[active_idx] {
-                                        crate::memory::reprogram_pmp_stack(new_tcb.name);
-                                    }
-                                }
+                                switch_task(sched, &mut current_sp, false);
                             }
                         }
                     } else {
@@ -819,14 +762,17 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                 let mepc = unsafe { frame.add(28).read_volatile() };
                 let instruction = unsafe { core::ptr::read_unaligned(mepc as *const u32) };
 
-                // Emulate CSR access to mstatus (0x300), cycle (0xC00), or mcycle (0xB00) to allow U-mode logging and cycle profiling
+                // Emulate CSR access to cycle (0xC00) or mcycle (0xB00) to allow
+                // U-mode cycle profiling without a full trap round-trip.
+                // mstatus (0x300) is deliberately NOT emulated here: it's a
+                // genuine privilege violation for U-mode code to touch, and
+                // must fall through to the containment path below rather
+                // than being silently absorbed.
                 let csr = instruction >> 20;
-                if (instruction & 0x7F) == 0x73 && (csr == 0x300 || csr == 0xC00 || csr == 0xB00) {
+                if (instruction & 0x7F) == 0x73 && (csr == 0xC00 || csr == 0xB00) {
                     let rd_idx = (instruction >> 7) & 0x1F;
-                    let val = if csr == 0x300 {
-                        0 // mstatus dummy value
-                    } else {
-                        // Return actual hardware cycles read in M-mode
+                    // Return actual hardware cycles read in M-mode
+                    let val: usize = {
                         let cycles: usize;
                         unsafe {
                             core::arch::asm!("csrr {}, mcycle", out(reg) cycles);
@@ -877,7 +823,20 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                 }
             }
 
-            if cause == 1 || cause == 2 || cause == 5 || cause == 7 {
+            // Causes 1/5/7 are PMP access faults, 2 is an illegal instruction/CSR
+            // privilege violation, and 4/6 are misaligned load/store addresses.
+            // All are synchronous faults attributable to the currently running
+            // task, so all are contained the same way: terminate the task,
+            // recover any mutex it held, and reschedule a healthy one rather
+            // than letting an unrecognized cause panic the whole core.
+            if cause == 1 || cause == 2 || cause == 4 || cause == 5 || cause == 6 || cause == 7 {
+                let frame = current_sp as *mut usize;
+                let mepc = unsafe { frame.add(28).read_volatile() };
+                telemetry::log_telemetry(&telemetry::TraceEvent::FaultInterception {
+                    cause: cause as u32,
+                    pc: mepc as u32,
+                });
+
                 if cause != 2 {
                     crate::kernel::metrics::METRIC_PMP_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
                 }
@@ -887,7 +846,9 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     static mut SCHEDULERS: [scheduler::bitmap::BitMapScheduler; 2];
                     static mut MUTEXES: [Option<crate::KernelMutex>; 8];
                     static MUTEX_LOCK: crate::kernel::spinlock::Spinlock;
+                    static SCHED_LOCK: crate::kernel::spinlock::Spinlock;
                 }
+                let _sched_guard = unsafe { SCHED_LOCK.lock_guard(hart_id) };
 
                 let running_idx;
                 let mut task_terminated = false;
@@ -899,11 +860,13 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                     let sched = &mut scheds[hart_id];
                     running_idx = sched.current_partition_idx;
 
-                     if let Some(tcb) = &mut sched.task_table[running_idx] {
+                    if let Some(tcb) = &mut sched.task_table[running_idx] {
                         let cause_str = match cause {
                             1 => "Instruction Access Fault",
                             2 => "Illegal Instruction",
+                            4 => "Load Address Misaligned",
                             5 => "Load Access Fault",
+                            6 => "Store Address Misaligned",
                             7 => "Store Access Fault",
                             _ => "Unknown Exception",
                         };
@@ -925,16 +888,24 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                 // Scope 2: Mutex recovery and waker logic
                 if task_terminated {
                     unsafe {
-                        MUTEX_LOCK.lock();
+                        MUTEX_LOCK.lock(hart_id);
                         let mutexes = &mut *core::ptr::addr_of_mut!(MUTEXES);
                         let scheds = &mut *core::ptr::addr_of_mut!(SCHEDULERS);
                         for (i, mutex_opt) in mutexes.iter_mut().enumerate() {
                             if let Some(mutex) = mutex_opt {
                                 if mutex.owner_task_idx == Some(running_idx as u8) {
                                     if let Some(name) = terminated_task_name {
-                                        defmt::warn!("Releasing Mutex {} owned by terminated task '{}'", i, name);
+                                        defmt::warn!(
+                                            "Releasing Mutex {} owned by terminated task '{}'",
+                                            i,
+                                            name
+                                        );
                                     } else {
-                                        defmt::warn!("Releasing Mutex {} owned by terminated task idx {}", i, running_idx);
+                                        defmt::warn!(
+                                            "Releasing Mutex {} owned by terminated task idx {}",
+                                            i,
+                                            running_idx
+                                        );
                                     }
                                     mutex.locked = false;
                                     mutex.owner_task_idx = None;
@@ -945,14 +916,26 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                         if (mutex.waiters_bitmap & (1 << w)) != 0 {
                                             if let Some(curr_w) = highest_waiter {
                                                 let w_prio = if w < 2 {
-                                                    scheds[0].task_table[w].as_ref().unwrap().priority
+                                                    scheds[0].task_table[w]
+                                                        .as_ref()
+                                                        .unwrap()
+                                                        .priority
                                                 } else {
-                                                    scheds[1].task_table[w].as_ref().unwrap().priority
+                                                    scheds[1].task_table[w]
+                                                        .as_ref()
+                                                        .unwrap()
+                                                        .priority
                                                 };
                                                 let curr_w_prio = if curr_w < 2 {
-                                                    scheds[0].task_table[curr_w].as_ref().unwrap().priority
+                                                    scheds[0].task_table[curr_w]
+                                                        .as_ref()
+                                                        .unwrap()
+                                                        .priority
                                                 } else {
-                                                    scheds[1].task_table[curr_w].as_ref().unwrap().priority
+                                                    scheds[1].task_table[curr_w]
+                                                        .as_ref()
+                                                        .unwrap()
+                                                        .priority
                                                 };
                                                 if w_prio < curr_w_prio {
                                                     highest_waiter = Some(w);
@@ -973,7 +956,9 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                                             if let Some(waiter_tcb) = &mut scheds[0].task_table[w] {
                                                 waiter_tcb.state = scheduler::TaskState::Ready;
                                             }
-                                        } else if let Some(waiter_tcb) = &mut scheds[1].task_table[w] {
+                                        } else if let Some(waiter_tcb) =
+                                            &mut scheds[1].task_table[w]
+                                        {
                                             waiter_tcb.state = scheduler::TaskState::Ready;
                                         }
                                     }
@@ -988,16 +973,7 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
                 {
                     let scheds = unsafe { &mut *core::ptr::addr_of_mut!(SCHEDULERS) };
                     let sched = &mut scheds[hart_id];
-                    if let Some((old_sp_ptr, new_sp)) = sched.schedule(false) {
-                        unsafe {
-                            old_sp_ptr.write_volatile(current_sp);
-                        }
-                        current_sp = new_sp;
-                        let active_idx = sched.current_partition_idx;
-                        if let Some(new_tcb) = &sched.task_table[active_idx] {
-                            crate::memory::reprogram_pmp_stack(new_tcb.name);
-                        }
-                    }
+                    switch_task(sched, &mut current_sp, false);
                 }
             } else {
                 defmt::error!("Unhandled exception. Cause register: 0x{:08X}", cause);
@@ -1010,4 +986,38 @@ pub unsafe extern "C" fn trap_handler(mcause: usize, user_sp: usize, start_cycle
     }
 
     current_sp
+}
+
+fn switch_task(
+    sched: &mut scheduler::bitmap::BitMapScheduler,
+    current_sp: &mut usize,
+    is_tick: bool,
+) {
+    let from = sched.current_partition_idx;
+    if let Some((old_sp_ptr, new_sp)) = sched.schedule(is_tick) {
+        let to = sched.current_partition_idx;
+        let cycles: u32;
+        #[cfg(not(kani))]
+        unsafe {
+            core::arch::asm!("csrr {0}, cycle", out(reg) cycles);
+        }
+        #[cfg(kani)]
+        {
+            cycles = 0;
+        }
+        telemetry::log_telemetry(&telemetry::TraceEvent::TaskSwap {
+            from: from as u8,
+            to: to as u8,
+            cycles,
+        });
+
+        unsafe {
+            old_sp_ptr.write_volatile(*current_sp);
+            *current_sp = new_sp;
+            let active_idx = sched.current_partition_idx;
+            if let Some(new_tcb) = &sched.task_table[active_idx] {
+                crate::memory::reprogram_pmp_stack(new_tcb.name);
+            }
+        }
+    }
 }
