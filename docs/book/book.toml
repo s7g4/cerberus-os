@@ -1,0 +1,23 @@
+[book]
+title = "Cerberus-OS"
+description = "High-integrity secure partitioning RISC-V microkernel — technical documentation"
+authors = ["s7g4"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/s7g4/cerberus-os"
+edit-url-template = "https://github.com/s7g4/cerberus-os/edit/main/docs/book/{path}"
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-icon = "fa-github"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[output.html.fold]
+enable = true
+level = 1
+
+[preprocessor]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"

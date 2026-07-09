@@ -1,6 +1,14 @@
 # Cerberus-OS: High-Integrity Secure Partitioning RISC-V Microkernel
 
+[![Cerberus-OS CI](https://github.com/s7g4/cerberus-os/actions/workflows/cerberus-ci.yml/badge.svg)](https://github.com/s7g4/cerberus-os/actions/workflows/cerberus-ci.yml)
+[![Docs](https://img.shields.io/badge/docs-live-blue)](https://s7g4.github.io/cerberus-os/)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Target](https://img.shields.io/badge/target-riscv32imac--unknown--none--elf-orange)](rust-toolchain.toml)
+[![no_std](https://img.shields.io/badge/no__std-yes-success)](kernel/Cargo.toml)
+
 Cerberus-OS is a bare-metal, `#![no_std]` secure partitioning microkernel designed for safety-critical automotive Electronic Control Units (ECUs) on 32-bit RISC-V (RV32IMAC). The architecture enforces strict spatial and temporal isolation between tasks of varying criticality levels (ASIL-D requirements) through hardware-enforced dynamic privilege separation, physical memory boundaries, and logical watchdog monitoring.
+
+**Full documentation: [s7g4.github.io/cerberus-os](https://s7g4.github.io/cerberus-os/)** — architecture deep-dives, all 16 ADRs, the fault-injection and telemetry pipeline, and the performance registry.
 
 ---
 
@@ -11,6 +19,21 @@ Cerberus-OS is a bare-metal, `#![no_std]` secure partitioning microkernel design
 * **Resource Guarantee**: Zero dynamic memory allocation (`no-heap`) to eliminate runtime fragmentation and non-deterministic latency.
 
 ---
+
+## Workspace Layout
+
+The kernel is split into a Cargo workspace so the scheduling and security logic can be unit-tested on the host (`cargo test`/`cargo bench` with an explicit `--target`) independently of the bare-metal target:
+
+| Crate | Responsibility |
+| :--- | :--- |
+| `kernel/` | Entry point, trap dispatch, memory/PMP management, boot sequence — the only crate that produces the flashable binary. |
+| `scheduler/` | The O(1) bitmap scheduler, priority inheritance, and task control block definitions. Host-testable and Kani-verified. |
+| `security/` | Secure bootloader signature checks, the vHSM partition, and HMAC authentication. |
+| `network/` | CAN frame parsing and the lock-free SPSC ring buffer. |
+| `telemetry/` | Postcard-encoded trace events (task swaps, IPC transfers, fault interceptions) emitted over a dedicated RTT channel, plus the syscall wrappers tasks use to talk to the kernel. |
+| `benchmarks/` | Host-side Criterion benchmarks for scheduler hot paths (not part of the flashed image). |
+
+`host/` (outside the workspace) holds the Python telemetry broker and Streamlit dashboard described below.
 
 ## System Architecture
 
@@ -79,7 +102,7 @@ Tasks run in User Mode (U-Mode) with restricted memory access. During context sw
 A dedicated high-priority Watchdog Task (Priority 0) enforces temporal and logical health checks:
 * **Non-Blocking Sleep Queue**: Tasks block cooperatively via `sleep_ticks` (Syscall 2), changing their state to `Blocked { wake_tick }` to preserve CPU cycles. Waking is processed inside the machine-mode timer interrupt vector.
 * **Temporal Supervision**: Supervised tasks call `watchdog_checkin` (Syscall 5). The watchdog checks if the elapsed ticks since a task's last check-in exceed the allowed threshold (200 ticks).
-* **Safe-Parking**: If a task fails to check in (simulating a hang or deadlock), the watchdog disables interrupts globally and safe-parks the CPU in an infinite wait-for-interrupt (`wfi`) loop.
+* **Contain, Don't Halt**: If a task fails to check in (simulating a hang or deadlock), the watchdog terminates *only that task* (Syscall 8), releases any mutex it held to its highest-priority waiter, and restarts it where applicable — the rest of the system, including the other core, keeps running. This applies uniformly to Task A/B/C and the HSM partition; nothing brings down the whole CPU on a hang.
 
 ---
 
@@ -90,7 +113,44 @@ A dedicated high-priority Watchdog Task (Priority 0) enforces temporal and logic
 * **Hardware-Enforced W^X (Write XOR Execute)**: Using RISC-V Physical Memory Protection (PMP), the kernel locks execution boundaries:
   - **Flash (Code)**: Read + Execute only (no writes).
   - **SRAM (RAM)**: Read + Write only (no execution).
-* **Exception Containment**: Synchronous hardware exceptions (Instruction, Load, and Store Access Faults) are intercepted in M-Mode. The kernel terminates the offending user task (`TaskState::Terminated`), releases its scheduling allocations, and continues running healthy tasks without halting the CPU.
+* **Exception Containment**: Synchronous hardware exceptions (Instruction Access, Load/Store Access, and Load/Store Address Misaligned faults) are intercepted in M-Mode. The kernel terminates the offending user task (`TaskState::Terminated`), releases its scheduling allocations, and continues running healthy tasks without halting the CPU.
+
+---
+
+## Automated Fault Injection & Containment Suite
+
+![Real captured boot sequence showing a contained fault](docs/assets/boot-fault-injection-demo.gif)
+
+*A real, unedited terminal capture: dual-core boot, secure boot verification, the mutex/HSM handshake, and a genuine hardware exception (`Store Address Misaligned`) being caught and contained rather than crashing the kernel.*
+
+Rather than just claiming fault containment, a dedicated Test Runner task (Task C) deliberately triggers a sequence of real hardware exceptions under Renode, and a Hardware-in-the-Loop (HIL) test (`renode-config/esp32c3.robot`) asserts the kernel survives every one of them:
+
+1. **PMP Stack Violation**: reads directly into another task's stack region → Load Access Fault (cause 5), correctly rejected by the reprogrammed PMP entries.
+2. **Privilege Violation**: attempts `csrw mstatus, zero` from U-Mode → Illegal Instruction (cause 2), rejected because CSR emulation only ever shims cycle-counter reads, never privileged writes.
+3. **Watchdog Timeout**: stops checking in entirely → the watchdog detects the missed deadline and terminates the task itself.
+
+In every case the offending task is terminated, any mutex it held is handed to the highest-priority waiter, the watchdog restarts the test runner for the next scenario, and both cores keep scheduling every other task throughout — the suite runs to completion without a panic or a halted core.
+
+The same containment path also runs in production, not just in the test suite: it's the mechanism that catches any real fault a task hits (including the misaligned-store case documented in `DEVLOG.md` Milestone 21).
+
+## Real-Time Telemetry Pipeline
+
+Kernel events are traced with near-zero on-target cost and visualized live, entirely off the MCU's own CPU budget:
+
+* **On-target**: `telemetry::log_telemetry` encodes `TaskSwap` / `IpcTransfer` / `FaultInterception` events with [Postcard](https://docs.rs/postcard) (a `no_std`, zero-allocation binary format) and writes them over a dedicated SEGGER RTT channel, separate from the human-readable log channel. This is a few bytes and a handful of cycles per event — no heap, no formatting, no blocking I/O.
+* **Host broker** (`host/telemetry_broker.py`): tails the raw RTT byte stream, decodes the Postcard wire format, and re-broadcasts each event as JSON over a plain TCP socket.
+* **Dashboard** (`host/dashboard.py`): a Streamlit + Plotly app that consumes that socket and renders a live task-swap timeline, IPC throughput, and a running count of contained faults.
+
+This is intentionally *not* an OpenTelemetry SDK on the MCU — the collector/exporter machinery alone would blow well past the 32 KB budget and require a heap. Shifting collection to the host keeps the target clean while still getting a real-time view of scheduling and fault behavior.
+
+Run it locally:
+```bash
+pip install -r host/requirements.txt
+python host/telemetry_broker.py &      # tails telemetry.bin, serves JSON on :8765
+streamlit run host/dashboard.py        # connects to the broker and renders live
+```
+
+Verified working end-to-end (task-swap timeline, IPC chart, and fault-containment log all populate live) — including fixing a real bug where the dashboard's background socket thread wasn't attached to Streamlit's script-run context, so it silently never displayed data at all regardless of whether the broker was working. See `DEVLOG.md` Milestone 21.
 
 ---
 
@@ -100,8 +160,8 @@ Benchmarks captured under a toolchain target configuration of `riscv32imac-unkno
 
 | Metric ID | Parameter | Description | Target Budget | Measured Value | Measurement Tool | Verification Scope |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **M01** | `binary_size_text` | Executable code space size | < 32,768 B | 20,436 B | `cargo-size` | Release target binary |
-| **M02** | `binary_size_bss` | Uninitialized static RAM size | < 4,096 B | 3,120 B | `cargo-size` | Release target binary |
+| **M01** | `binary_size_text` | Executable code space size | < 32,768 B | 25,968 B | `cargo-size` | Release target binary |
+| **M02** | `binary_size_bss` | Uninitialized static RAM size | < 4,096 B (historical target, see `METRICS.md`) | 10,304 B | `cargo-size` | Release target binary |
 | **M03** | `trap_entry_latency` | Context preservation overhead | < 80 cycles | 68 cycles | `mcycle` register | Interrupt Vector overhead |
 | **M04** | `context_switch_latency` | Context swap instruction latency | < 100 cycles | 54 cycles | `mcycle` register | Inline timer interrupt measurement |
 | **M05** | `can_enqueue_latency` | SPSC queue push execution time | < 50 cycles | 18 cycles | Hardware cycle counter | Raw transceiver ingestion path |
@@ -163,3 +223,14 @@ Static checks enforced before code release:
   ```powershell
   cargo objdump --target riscv32imac-unknown-none-elf --release -- --disassemble | Select-String -Pattern "fadd", "fsub", "fmul", "fdiv"
   ```
+
+### Continuous Integration
+`.github/workflows/cerberus-ci.yml` runs on every push and gates on:
+1. **Lint** — `cargo fmt --check` and `cargo clippy -- -D warnings`.
+2. **Build & static budgets** — release build, then asserts `.text <= 32768` bytes, zero `__rust_alloc` symbols, and zero FPU opcodes in the disassembly.
+3. **Hardware-in-the-Loop boot test** — boots the release binary under [Renode](https://renode.io/) against `renode-config/esp32c3.repl` (a dual-core RV32IMAC platform description) and asserts, via `renode-config/esp32c3.robot`, that both cores boot, the secure bootloader verifies correctly, and the full fault-injection suite above runs to completion over the RTT console.
+
+Run the same HIL test locally with Renode installed:
+```bash
+renode-test renode-config/esp32c3.robot
+```

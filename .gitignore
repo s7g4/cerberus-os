@@ -6,3 +6,7 @@ results-esp32c3.robot.xml
 logs/
 snapshots/
 rtt_output.log
+telemetry.bin
+docs/book/book/
+__pycache__/
+*.pyc
