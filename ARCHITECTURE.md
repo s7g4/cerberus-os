@@ -58,10 +58,19 @@ flowchart TB
 * **PIP Removal**: Because each partition is allocated a dedicated temporal slot and runs exactly one task context, priority inversion across partitions is impossible. Cooperative blocks (e.g. blocking on Mutex 0) naturally trigger a context swap, rendering the Priority Inheritance Protocol (PIP) obsolete and allowing its clean removal.
 
 ### 4. Hardware Exception Trapping & Recovery
-* Synchronous exception causes (Instruction Access Fault `1`, Load Access Fault `5`, Store Access Fault `7`) are caught by the kernel trap handler. 
-* Rather than panicking, the kernel terminates the offending task, marks it as `Terminated` in its TCB, clears its ready bit, and reschedules to healthy tasks (Task A, Task B, Watchdog Task).
+* Synchronous exception causes — Instruction Access Fault (`1`), Illegal Instruction (`2`), Load/Store Address Misaligned (`4`/`6`), and Load/Store Access Fault (`5`/`7`) — are all caught by the same containment path in the kernel trap handler. Widening this set (it originally handled only `1`/`5`/`7`) closed a real gap: any *other* synchronous exception used to fall through to a hard `panic!()` that halted the whole core rather than just the offending task.
+* Rather than panicking, the kernel terminates the offending task, marks it as `Terminated` in its TCB, releases any mutex it held to the highest-priority waiter, clears its ready bit, and reschedules to healthy tasks.
 
 ### 5. CAN Stack and Cryptographic Authentication
 * **Boundary Filtering**: Parses raw transceiver bytes, extracting IDs and data payloads. Rejects OBD-II diagnostic request packets (`0x7DF`) and ECU query ranges (`0x7E0`–`0x7EF`) at the boundary.
 * **HMAC Signatures**: Appends a 64-bit truncated HMAC-SHA256 signature to payloads, ensuring authenticity over low-bandwidth buses.
 * **Side-Channel Mitigation**: Verification uses a constant-time bitwise accumulator to avoid early-exit timing leaks.
+
+### 6. Dual-Core SMP & Cross-Core Synchronization
+* **Per-Core Scheduling**: Each hart (`hart0`, `hart1`) runs its own independent `BitMapScheduler` instance and takes its own timer/software interrupts; task-to-core assignment is fixed at registration (Watchdog, Task A, and the vHSM partition on hart0; Task B and Task C on hart1).
+* **`SCHED_LOCK`**: Several operations are inherently cross-core — IPC rendezvous searches both cores' task tables for a waiting sender/receiver, mutex unlock scans both cores for the highest-priority waiter, and `Syscall 8` can terminate a task on either core. All of these hold a single reentrant spinlock (`SCHED_LOCK`) for the full duration of the access, not just the initial pointer fetch. Reentrancy matters here specifically: a synchronous fault can occur *while a hart already holds the lock* (that's exactly what the fault-injection suite exercises), and a plain non-reentrant lock would deadlock a hart against itself in that case.
+* **Cross-Core Wakeup**: When a rendezvous or mutex handoff resolves a task on the *other* core, the resolving hart writes to that core's CLINT `msip` register to raise a software interrupt, which the target hart handles as a normal reschedule point.
+
+### 7. Real-Time Telemetry
+* `telemetry::log_telemetry` runs inside the trap handler (never from task code) on every task swap, IPC transfer, and contained fault, encoding a small `TraceEvent` with Postcard and writing it to a dedicated RTT channel separate from the human-readable log.
+* A host-side broker and Streamlit dashboard (see `README.md`) decode and visualize this stream live; the MCU side has no network stack, no allocator, and no knowledge of the host tooling.

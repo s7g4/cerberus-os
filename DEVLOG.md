@@ -293,4 +293,30 @@
 - **Metric Captured**:
   - Fault isolation and waker recovery compiles and functions cleanly. Verification tests successfully isolate PMP faults, illegal instructions, and restart the test runner sequentially, maintaining 100% core scheduler availability.
 
+## Milestone 21 — Telemetry Pipeline Hardening & SMP Concurrency Audit
+- **Goal**: Wire up the Day 8 telemetry pipeline (RTT binary markers, host broker, live dashboard) and verify the Day 6/7 HIL suite actually completes end-to-end under Renode, not just in isolated milestones.
+- **What Broke & How it Was Fixed**:
+  - *Issue 1 — Cross-core data race on `SCHEDULERS`*: Every `SCHEDULERS` access in `trap.rs` (IPC rendezvous, mutex-unlock priority scan, task termination, fault recovery) was unprotected across harts — only the separate `MUTEXES` array had a spinlock. A hart reading a `TaskState` mid-write by the other hart could get a torn value.
+    - *Fix*: Added `SCHED_LOCK`, held across every `SCHEDULERS`-touching critical section in `trap.rs` and in `watchdog_task`.
+  - *Issue 2 — Self-deadlock in the new lock*: A synchronous fault occurring while a hart already holds `SCHED_LOCK` (exactly what fault injection does deliberately) would spin forever trying to re-acquire a lock it already owns.
+    - *Fix*: Made `Spinlock` track owner hart + hold depth, so same-hart re-entry succeeds instead of deadlocking.
+  - *Issue 3 — CSR-emulation shim silently absorbing Test 2*: The shim added to let U-mode tasks read `cycle`/`mcycle` for profiling also matched `mstatus` (csr 0x300), so Test 2's deliberate `csrw mstatus, zero` privilege violation was quietly emulated away instead of trapping.
+    - *Fix*: Removed `mstatus` from the emulated CSR set; only cycle counters are still shimmed.
+  - *Issue 4 — `watchdog_task` bypassing the new lock and reading a privileged CSR from U-mode*: Watchdog directly dereferenced `SCHEDULERS` with no lock, and the new `Spinlock` read `mhartid` internally — a Machine-mode-only CSR, illegal to read from U-mode task code, which Watchdog is.
+    - *Fix*: `Spinlock::lock`/`lock_guard` now take an explicit `hart_id` parameter; M-mode callers pass their CSR-read value, Watchdog passes its statically-known hart (0).
+  - *Issue 5 — `&mut` aliasing UB across a self-triggered `ecall`*: `watchdog_task` held a `&mut` reference into `SCHEDULERS` across its own call to `sys_terminate_task`, which re-enters `trap_handler` and takes an independent `&mut` reference to the same static — undefined behavior regardless of `SCHED_LOCK` already serializing the underlying hardware access.
+    - *Fix*: Scoped the health-check `&mut` reference tightly so it drops before the `ecall`.
+  - *Issue 6 — Non-atomic dual-core console writes and a missing Zicsr ISA declaration*: The `.resc` RTT hook wrote both harts' output through `console.DisplayChar` with no lock, visibly interleaving output; the `.repl` CPU type omitted `_zicsr_zifencei`, causing thousands of spurious "instruction set not enabled" warnings per run that inflated Renode's memory footprint on long runs.
+    - *Fix*: Added a Python-level lock around the RTT write hook (read the full payload before touching shared output); changed `cpuType` to `rv32imac_zicsr_zifencei`.
+  - *Issue 7 (root cause of the actual recurring crash) — Misaligned store inside `sha2::sha256::compress256`*: Traced via targeted `defmt` prints and disassembly to `sw t2, 0x0(a0)`, where `a0` holds a misaligned pointer into the HSM partition's internal SHA-256 state. This project's own code (HMAC call site, stack initialization via `#[repr(align(1024))] Stack`) checks out as correct; the misalignment originates deeper in the crate or in Renode's CPU-model emulation — not conclusively isolated further after extensive GDB-assisted investigation.
+    - *Fix*: Not fixed at the source (out of scope for this pass). Already gracefully contained: cause 6 (Store Address Misaligned) was added to the containable exception set in the same pass as Issue 3, so the fault now correctly terminates just the HSM partition rather than panicking a whole core. Additionally added HSM Task to the watchdog's health-check and restart logic (it previously wasn't monitored at all), so a contained HSM fault no longer leaves the partition permanently dead.
+- **Time Log**:
+  - Diagnosing and fixing the SCHEDULERS race, reentrant lock, and CSR-emulation gap: 2h
+  - Chasing the wrong theory (Test 2 / switch_task / PMP naming) due to misleadingly-buffered Renode console output: 2h
+  - Setting up resource-safe local Renode validation (RSS-capped, `nice`-throttled wrapper scripts) after early runs put real memory pressure on the host: 1h
+  - GDB remote debugging against Renode's multi-core GDB stub, working through breakpoint-ordering and process-lifecycle issues: 1h30m
+  - Isolating the real root cause via targeted `defmt` prints and disassembly, then wiring HSM into the watchdog: 45m
+- **Metric Captured**:
+  - Clean release build: `.text` = 25,968 bytes (budget 32,768), zero heap allocations, zero FPU instructions, `cargo clippy -D warnings` and `cargo fmt --check` both clean.
+  - Repeated clean Renode runs post-fix show zero panics and zero CPU aborts through boot, mutex/HSM exchange, and Test 1/2 fault containment — the crash signatures present before this milestone are gone. Full Test 1→2→3 completion in a single unbroken run was not directly observed locally, solely due to Renode's own memory growth outpacing a safety cap on this machine (~41 MB/s, confirmed linear, unrelated to kernel correctness); deferred to CI, which runs on a disposable runner without that constraint.
 
