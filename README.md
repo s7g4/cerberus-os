@@ -88,15 +88,11 @@ To enforce strict real-time determinism, ready-to-run tasks are tracked using a 
   ```
 * **Performance Guarantee**: Task selection executes in exactly **1 CPU cycle**, ensuring scheduling latency is constant and independent of the number of registered tasks in the system.
 
-### 2. Priority Inheritance Protocol (PIP)
-To solve priority inversion (where a medium-priority task preempts a low-priority task holding a mutex, starving a blocked high-priority task), the kernel implements the Priority Inheritance Protocol:
-1. **Dynamic Boost**: When a high-priority task attempts to acquire a locked mutex, the kernel blocks the waiter and boosts the owner task's active priority to match the waiter's priority.
-2. **Preemption Avoidance**: The boosted lock holder executes at the elevated priority, preventing intermediate priority threads from preempting its critical section.
-3. **Restoration**: On mutex release, the holder's active priority is restored to its base priority, and the waiting high-priority task immediately preempts and runs.
-4. **Complexity Bounds**: Using a direct priority-to-task lookup array (`priority_to_task: [Option<u8>; 32]`), priority updates run in strict O(1) constant time without scanning task lists.
+### 2. Bounded Mutex Wakeup (Priority Inheritance, Superseded)
+Priority Inheritance Protocol was the original design for the mutex layer (ADR-011): boost a lock owner's active priority to match a higher-priority waiter, to bound blocking time. It shipped, then was superseded by ADR-014's move to ARINC-653 time partitioning — because each partition now gets a dedicated, non-preemptible time slot, cross-partition priority inversion is structurally impossible, so active-priority boosting was removed as dead complexity. What remains today: each `KernelMutex` tracks blocked tasks in a `waiters_bitmap`, and on release the kernel wakes the highest **base**-priority waiter (a direct array scan by `tcb.priority`, not a boosted/dynamic value). No `active_priority` field is ever mutated after task registration.
 
 ### 3. Dynamic Stack Sandboxing (PMP)
-Tasks run in User Mode (U-Mode) with restricted memory access. During context switches, the kernel reprograms CPU Physical Memory Protection (PMP) registers (Entries 1, 2, and 4) using the Naturally Aligned Power Of Two (NAPOT) format. These entries are configured to map the stack regions of the three inactive tasks as "No Access" (R=0, W=0, X=0). Any out-of-bounds stack reference triggers an immediate CPU-level Load/Store Access Fault, containing faults to the offending task context.
+Tasks run in User Mode (U-Mode) with restricted memory access. During context switches, the kernel reprograms five dedicated PMP entries (1, 2, 4, 5, 6) — one per known task stack (Watchdog, Task A, Task B, Task C, HSM) — using the Naturally Aligned Power Of Two (NAPOT) format. The entry matching the active task is set to `Off` (falls through to the broad SRAM allow region); every other entry maps its stack as "No Access" (R=0, W=0, X=0). When neither idle task's name matches any of the five, all five are blocked. Any out-of-bounds stack reference triggers an immediate CPU-level Load/Store Access Fault, containing faults to the offending task context. This protects a task's stack from *other* tasks; it does not guard a task from overflowing its own stack (see `SECURITY.md`).
 
 ### 4. AUTOSAR-Style Logical Watchdog Thread Monitor
 A dedicated high-priority Watchdog Task (Priority 0) enforces temporal and logical health checks:
@@ -109,7 +105,7 @@ A dedicated high-priority Watchdog Task (Priority 0) enforces temporal and logic
 ## Safety & Isolation Policies
 
 * **Zero-Allocation Memory Model**: Dynamic heap allocation is prohibited at compile-time. All OS objects, queues, and task stacks are statically allocated. This avoids non-deterministic memory fragmentation and Out-Of-Memory (OOM) panic vectors.
-* **Link-Time Stack Protection**: The linker uses `flip-link` to place task stacks at the lowest boundary of RAM. Any stack overflow triggers a physical hardware write violation immediately, halting execution before corruption occurs.
+* **Inactive-Stack Protection (PMP)**: During every context switch, the four *inactive* task stacks are covered by dedicated PMP entries with no read/write/execute permission, so one task cannot reach into another's stack. This does **not** cover the *currently active* task overflowing its own stack — there is no linker-level guard page (an earlier plan to use `flip-link` for that was researched but never wired into the build; see `RESEARCH.md` and `SECURITY.md`).
 * **Hardware-Enforced W^X (Write XOR Execute)**: Using RISC-V Physical Memory Protection (PMP), the kernel locks execution boundaries:
   - **Flash (Code)**: Read + Execute only (no writes).
   - **SRAM (RAM)**: Read + Write only (no execution).

@@ -17,6 +17,8 @@ If the stack overflows, it silently overrides heap data or global variables, cau
 `flip-link` reorders the layout to place the stack at the lowest address of RAM, growing downwards towards unmapped memory or a read-only page.
 [Unmapped / Read-Only Guard Page] <= [ Stack (Grows Downward) ] -> [ .data / .bss ] -> [ Heap ] -> [High Memory]
 
+**Status in this repo**: this section documents the technique as researched at Milestone 0; `flip-link` was never actually wired into `.cargo/config.toml`'s linker invocation, so Cerberus-OS does not currently get this guard page. Task stacks (`TASK_A_STACK` etc.) are protected from *other* tasks via dynamic PMP entries (see `ARCHITECTURE.md` §6), but a task overflowing its own stack has no guard today. See `SECURITY.md`.
+
 Now, a stack overflow triggers an immediate physical hardware write violation fault, stopping execution before data corruption can occur. Cost: 0 runtime cycles.
 
 ## 3. `probe-rs` and Real-Time Transfer (RTT)

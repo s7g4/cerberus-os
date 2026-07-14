@@ -2,8 +2,8 @@
 
 | ID | Metric | Definition | Unit | Target | Measured | Tool | Milestone |
 |----|--------|-----------|------|--------|----------|------|-----------|
-| M01 | binary_size_text | .text section size | bytes | <32768 | 25968 | cargo-size | Milestone 21 |
-| M02 | binary_size_bss | .bss section size | bytes | <4096 (historical) | 10304 | cargo-size | Milestone 21 |
+| M01 | binary_size_text | .text section size | bytes | <32768 | 25884 | llvm-size | Engineering Audit |
+| M02 | binary_size_bss | .bss section size | bytes | <4096 (historical) | 10304 | llvm-size | Milestone 21 |
 | M03 | trap_entry_latency | Context preservation overhead | cycles | <80 | 68 | mcycle CSR | Interrupt Vector |
 | M04 | context_switch_latency | Scheduler execution and stack swap | cycles | <100 | 54 | mcycle CSR | Scheduler |
 | M05 | can_enqueue_latency | SPSC queue push/pop overhead | cycles | <50 | 18 | mcycle CSR | CAN Protocol |
