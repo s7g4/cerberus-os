@@ -11,7 +11,7 @@ workspace = true
 scheduler = { path = "../scheduler" }
 
 [dev-dependencies]
-criterion = "=0.4.0"
+criterion = "=0.8.2"
 
 
 [[bench]]
