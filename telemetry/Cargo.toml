@@ -8,6 +8,6 @@ workspace = true
 
 
 [dependencies]
-defmt = "0.3.8"
+defmt = "1.1.0"
 serde = { version = "1.0.204", default-features = false, features = ["derive"] }
 postcard = { version = "1.0.8", default-features = false }

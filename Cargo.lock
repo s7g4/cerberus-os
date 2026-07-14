@@ -226,15 +226,6 @@ dependencies = [
 
 [[package]]
 name = "defmt"
-version = "0.3.100"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0963443817029b2024136fc4dd07a5107eb8f977eaf18fcd1fdeb11306b64ad"
-dependencies = [
- "defmt 1.1.0",
-]
-
-[[package]]
-name = "defmt"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6e524506490a1953d237cb87b1cfc1e46f88c18f10a22dfe0f507dc6bfc7f7f"
@@ -387,7 +378,7 @@ dependencies = [
 name = "kernel"
 version = "0.1.0"
 dependencies = [
- "defmt 0.3.100",
+ "defmt",
  "network",
  "riscv",
  "riscv-rt",
@@ -419,7 +410,7 @@ checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 name = "network"
 version = "0.1.0"
 dependencies = [
- "defmt 0.3.100",
+ "defmt",
 ]
 
 [[package]]
@@ -632,14 +623,14 @@ dependencies = [
 name = "scheduler"
 version = "0.1.0"
 dependencies = [
- "defmt 0.3.100",
+ "defmt",
 ]
 
 [[package]]
 name = "security"
 version = "0.1.0"
 dependencies = [
- "defmt 0.3.100",
+ "defmt",
  "network",
  "sha2",
  "telemetry",
@@ -720,7 +711,7 @@ dependencies = [
 name = "telemetry"
 version = "0.1.0"
 dependencies = [
- "defmt 0.3.100",
+ "defmt",
  "postcard",
  "serde",
 ]

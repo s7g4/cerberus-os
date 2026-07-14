@@ -8,4 +8,4 @@ workspace = true
 
 
 [dependencies]
-defmt = "0.3.8"
+defmt = "1.1.0"
