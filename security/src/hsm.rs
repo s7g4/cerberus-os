@@ -1,15 +1,26 @@
 //! Virtual Hardware Security Module (vHSM) Partition.
 //!
 //! Stores private cryptographic keys and processes HMAC signing requests in U-mode.
+//!
+//! # Honest scope
+//!
+//! `HMAC_KEY` below is a compile-time constant embedded directly in the
+//! flashed image, as its own name says. There is no key provisioning or
+//! secure storage: anyone with firmware read access (recovering it is
+//! trivial given `verify_secure_boot`'s own scope, see `bootloader.rs`) can
+//! recover this key. It demonstrates the vHSM IPC partitioning pattern
+//! (U-mode task holds the key, other tasks only ever see a signing
+//! request/response over a capability-gated endpoint), not real key
+//! custody. See `SECURITY.md`.
 
 use crate::defmt;
+use crate::hmac::HMAC_TAG_LEN;
 use network::can::CanFrame;
 use sha2::{Digest, Sha256};
 use telemetry::syscalls::{sys_recv, sys_send, watchdog_checkin};
 
 /// The private HMAC key, strictly isolated inside the HSM partition.
 const HMAC_KEY: &[u8; 32] = b"cerberus-os-dev-key-not-for-prod";
-pub const HMAC_TAG_LEN: usize = 8;
 
 /// Computes a 64-bit truncated HMAC-SHA256 over a CAN frame.
 fn compute_hmac_local(frame: &CanFrame) -> [u8; HMAC_TAG_LEN] {

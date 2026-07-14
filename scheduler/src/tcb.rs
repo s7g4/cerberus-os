@@ -73,23 +73,61 @@ impl TaskControlBlock {
         let stack_start = stack.as_ptr() as usize;
         let stack_end = stack_start + stack.len();
 
+        // Frame is 32 registers wide; size it in bytes from the actual word
+        // width instead of hardcoding 128, so the reservation stays correct
+        // if usize's width ever changes (e.g. running host-side unit tests
+        // on a 64-bit target).
+        let frame_bytes = 32 * core::mem::size_of::<usize>();
+
         // 16-byte stack alignment (ABI requirement)
-        let aligned_sp = (stack_end & !0xF) - 128;
+        let aligned_sp = (stack_end & !0xF) - frame_bytes;
 
         let frame = aligned_sp as *mut usize;
         unsafe {
-            // Clear the entire 128-byte frame (32 words) to zero
+            // Clear the entire frame to zero
             for i in 0..32 {
                 frame.add(i).write_volatile(0);
             }
 
-            // Write mepc (offset 112, word index 28) = entry_fn
+            // Write mepc (word index 28) = entry_fn
             frame.add(28).write_volatile(entry_fn as usize);
 
-            // Write mstatus (offset 116, word index 29) = 0x80 (MPIE = 1, MPP = U-mode)
+            // Write mstatus (word index 29) = 0x80 (MPIE = 1, MPP = U-mode)
             frame.add(29).write_volatile(0x80);
         }
 
         aligned_sp
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    extern "C" fn dummy_entry() -> ! {
+        loop {}
+    }
+
+    #[test]
+    fn initialize_stack_returns_16_byte_aligned_sp() {
+        let mut stack = [0u8; 256];
+        let sp = TaskControlBlock::initialize_stack(&mut stack, dummy_entry);
+        assert_eq!(sp % 16, 0);
+    }
+
+    #[test]
+    fn initialize_stack_writes_entry_fn_as_mepc() {
+        let mut stack = [0u8; 512];
+        let sp = TaskControlBlock::initialize_stack(&mut stack, dummy_entry);
+        let mepc = unsafe { *(sp as *const usize).add(28) };
+        assert_eq!(mepc, dummy_entry as usize);
+    }
+
+    #[test]
+    fn initialize_stack_writes_u_mode_mstatus() {
+        let mut stack = [0u8; 512];
+        let sp = TaskControlBlock::initialize_stack(&mut stack, dummy_entry);
+        let mstatus = unsafe { *(sp as *const usize).add(29) };
+        assert_eq!(mstatus, 0x80);
     }
 }

@@ -116,3 +116,85 @@ impl CanRingBuffer {
         self.head == self.tail
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw_frame(id: u16, dlc: u8, payload: &[u8]) -> [u8; 13] {
+        let mut raw = [0u8; 13];
+        raw[0] = (id >> 3) as u8;
+        raw[1] = ((id & 0x7) as u8) << 5;
+        raw[2] = dlc;
+        raw[3..3 + payload.len()].copy_from_slice(payload);
+        raw
+    }
+
+    #[test]
+    fn parse_extracts_id_dlc_and_payload() {
+        let raw = raw_frame(0x123, 4, &[0xAA, 0xBB, 0xCC, 0xDD]);
+        let frame = CanFrame::parse(&raw).unwrap();
+        assert_eq!(frame.id, 0x123);
+        assert_eq!(frame.dlc, 4);
+        assert_eq!(&frame.payload[..4], &[0xAA, 0xBB, 0xCC, 0xDD]);
+    }
+
+    #[test]
+    fn parse_rejects_blocked_diagnostic_ids() {
+        let raw = raw_frame(0x7DF, 0, &[]);
+        assert!(matches!(
+            CanFrame::parse(&raw),
+            Err(CanError::BlockedId(0x7DF))
+        ));
+    }
+
+    #[test]
+    fn parse_rejects_dlc_over_eight() {
+        let mut raw = raw_frame(0x100, 0, &[]);
+        raw[2] = 9;
+        assert!(matches!(
+            CanFrame::parse(&raw),
+            Err(CanError::InvalidDlc(9))
+        ));
+    }
+
+    #[test]
+    fn ring_buffer_push_pop_preserves_order() {
+        let mut ring = CanRingBuffer::new();
+        assert!(ring.is_empty());
+        for i in 0..4u16 {
+            ring.push(CanFrame {
+                id: i,
+                dlc: 0,
+                payload: [0u8; CAN_MAX_PAYLOAD],
+            })
+            .unwrap();
+        }
+        for i in 0..4u16 {
+            assert_eq!(ring.pop().unwrap().id, i);
+        }
+        assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn ring_buffer_rejects_push_when_full() {
+        let mut ring = CanRingBuffer::new();
+        // Capacity is RING_CAPACITY - 1 usable slots (one slot always kept empty
+        // to distinguish full from empty using head == tail).
+        for i in 0..(RING_CAPACITY - 1) as u16 {
+            ring.push(CanFrame {
+                id: i,
+                dlc: 0,
+                payload: [0u8; CAN_MAX_PAYLOAD],
+            })
+            .unwrap();
+        }
+        assert!(ring.is_full());
+        let overflow = ring.push(CanFrame {
+            id: 999,
+            dlc: 0,
+            payload: [0u8; CAN_MAX_PAYLOAD],
+        });
+        assert!(matches!(overflow, Err(CanError::BufferFull)));
+    }
+}

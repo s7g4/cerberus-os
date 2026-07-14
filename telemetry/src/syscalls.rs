@@ -3,7 +3,7 @@
 /// Syscall wrapper to trigger cooperative yields from User Mode.
 #[inline(always)]
 pub fn yield_now() {
-    #[cfg(not(kani))]
+    #[cfg(all(target_arch = "riscv32", not(kani)))]
     unsafe {
         core::arch::asm!(
             "ecall",
@@ -16,7 +16,7 @@ pub fn yield_now() {
 #[inline(always)]
 pub fn sleep_ticks(ticks: usize) {
     let _ = ticks;
-    #[cfg(not(kani))]
+    #[cfg(all(target_arch = "riscv32", not(kani)))]
     unsafe {
         core::arch::asm!(
             "ecall",
@@ -30,7 +30,7 @@ pub fn sleep_ticks(ticks: usize) {
 #[inline(always)]
 pub fn lock_mutex(idx: usize) {
     let _ = idx;
-    #[cfg(not(kani))]
+    #[cfg(all(target_arch = "riscv32", not(kani)))]
     unsafe {
         core::arch::asm!(
             "ecall",
@@ -44,7 +44,7 @@ pub fn lock_mutex(idx: usize) {
 #[inline(always)]
 pub fn unlock_mutex(idx: usize) {
     let _ = idx;
-    #[cfg(not(kani))]
+    #[cfg(all(target_arch = "riscv32", not(kani)))]
     unsafe {
         core::arch::asm!(
             "ecall",
@@ -57,7 +57,7 @@ pub fn unlock_mutex(idx: usize) {
 /// Syscall wrapper to check in with the Watchdog.
 #[inline(always)]
 pub fn watchdog_checkin() {
-    #[cfg(not(kani))]
+    #[cfg(all(target_arch = "riscv32", not(kani)))]
     unsafe {
         core::arch::asm!(
             "ecall",
@@ -69,7 +69,7 @@ pub fn watchdog_checkin() {
 /// Syscall wrapper to send an IPC message (synchronous rendezvous).
 #[inline(always)]
 pub fn sys_send(cap_idx: usize, msg: &[u8]) -> isize {
-    #[cfg(not(kani))]
+    #[cfg(all(target_arch = "riscv32", not(kani)))]
     {
         let ret: isize;
         unsafe {
@@ -83,7 +83,7 @@ pub fn sys_send(cap_idx: usize, msg: &[u8]) -> isize {
         }
         ret
     }
-    #[cfg(kani)]
+    #[cfg(any(kani, not(target_arch = "riscv32")))]
     {
         let _ = cap_idx;
         let _ = msg;
@@ -94,7 +94,7 @@ pub fn sys_send(cap_idx: usize, msg: &[u8]) -> isize {
 /// Syscall wrapper to receive an IPC message (synchronous rendezvous).
 #[inline(always)]
 pub fn sys_recv(cap_idx: usize, buf: &mut [u8]) -> isize {
-    #[cfg(not(kani))]
+    #[cfg(all(target_arch = "riscv32", not(kani)))]
     {
         let ret: isize;
         unsafe {
@@ -108,7 +108,7 @@ pub fn sys_recv(cap_idx: usize, buf: &mut [u8]) -> isize {
         }
         ret
     }
-    #[cfg(kani)]
+    #[cfg(any(kani, not(target_arch = "riscv32")))]
     {
         let _ = cap_idx;
         let _ = buf;
@@ -119,7 +119,7 @@ pub fn sys_recv(cap_idx: usize, buf: &mut [u8]) -> isize {
 /// Syscall wrapper to terminate a task by priority.
 #[inline(always)]
 pub fn sys_terminate_task(prio: usize) -> isize {
-    #[cfg(not(kani))]
+    #[cfg(all(target_arch = "riscv32", not(kani)))]
     {
         let ret: isize;
         unsafe {
@@ -131,7 +131,7 @@ pub fn sys_terminate_task(prio: usize) -> isize {
         }
         ret
     }
-    #[cfg(kani)]
+    #[cfg(any(kani, not(target_arch = "riscv32")))]
     {
         let _ = prio;
         0

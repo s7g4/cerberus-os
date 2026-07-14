@@ -126,6 +126,86 @@ impl BitMapScheduler {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tcb::Capability;
+
+    fn tcb(priority: u8, state: TaskState) -> TaskControlBlock {
+        TaskControlBlock {
+            saved_sp: 0,
+            priority,
+            active_priority: priority,
+            state,
+            name: "test",
+            capabilities: [Capability::None; 8],
+        }
+    }
+
+    #[test]
+    fn schedule_stays_on_current_task_while_slice_remains() {
+        let mut sched = BitMapScheduler::new();
+        sched.register_task(tcb(0, TaskState::Running));
+        sched.remaining_mif_ticks = 5;
+
+        assert!(sched.schedule(true).is_none());
+        assert_eq!(sched.current_partition_idx, 0);
+    }
+
+    #[test]
+    fn schedule_switches_to_next_ready_task_when_slice_expires() {
+        let mut sched = BitMapScheduler::new();
+        sched.register_task(tcb(0, TaskState::Running));
+        sched.register_task(tcb(1, TaskState::Ready));
+        sched.remaining_mif_ticks = 1;
+
+        let result = sched.schedule(true);
+        assert!(result.is_some());
+        assert_eq!(sched.current_partition_idx, 1);
+        assert_eq!(
+            sched.task_table[1].as_ref().unwrap().state,
+            TaskState::Running
+        );
+        assert_eq!(
+            sched.task_table[0].as_ref().unwrap().state,
+            TaskState::Ready
+        );
+    }
+
+    #[test]
+    fn schedule_forced_yield_switches_even_with_ticks_remaining() {
+        let mut sched = BitMapScheduler::new();
+        sched.register_task(tcb(0, TaskState::Running));
+        sched.register_task(tcb(1, TaskState::Ready));
+        sched.remaining_mif_ticks = 50;
+
+        let result = sched.schedule(false);
+        assert!(result.is_some());
+        assert_eq!(sched.current_partition_idx, 1);
+    }
+
+    #[test]
+    fn schedule_falls_back_to_idle_partition_when_nothing_else_ready() {
+        let mut sched = BitMapScheduler::new();
+        sched.register_task(tcb(0, TaskState::Blocked { wake_tick: 10 }));
+        sched.register_task(tcb(31, TaskState::Ready));
+        sched.remaining_mif_ticks = 0;
+
+        let result = sched.schedule(true);
+        assert!(result.is_some());
+        assert_eq!(sched.current_partition_idx, 31);
+    }
+
+    #[test]
+    fn schedule_returns_none_when_no_task_is_ready() {
+        let mut sched = BitMapScheduler::new();
+        sched.register_task(tcb(0, TaskState::Blocked { wake_tick: 10 }));
+        sched.remaining_mif_ticks = 0;
+
+        assert!(sched.schedule(true).is_none());
+    }
+}
+
 #[cfg(kani)]
 mod verification {
     use super::*;

@@ -1,5 +1,5 @@
 //! Cryptographic security and frame authentication subsystem.
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 #[cfg(kani)]
 extern crate kani;
