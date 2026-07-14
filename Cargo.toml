@@ -20,10 +20,12 @@ default-members = [
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [profile.dev]
-opt-level = "z"
+# panic = "abort" is required (not a size optimization): the bare-metal
+# no_std target has no unwinding support. opt-level/lto/codegen-units are
+# release-binary-size concerns and are intentionally NOT mirrored here, so
+# local `cargo build`/`cargo test` iteration isn't paying full-LTO cost on
+# every edit; only `--release` (what CI budgets against) uses that profile.
 debug = true
-lto = true
-codegen-units = 1
 panic = "abort"
 
 [profile.release]
