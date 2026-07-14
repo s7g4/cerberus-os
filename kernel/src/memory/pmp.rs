@@ -65,6 +65,7 @@ pub unsafe fn configure_pmp(entry: usize, base_addr: usize, size: usize, config:
             3 => core::arch::asm!("csrw pmpaddr3, {}", in(reg) napot_val),
             4 => core::arch::asm!("csrw pmpaddr4, {}", in(reg) napot_val),
             5 => core::arch::asm!("csrw pmpaddr5, {}", in(reg) napot_val),
+            6 => core::arch::asm!("csrw pmpaddr6, {}", in(reg) napot_val),
             _ => panic!("Unsupported PMP entry index"),
         }
 
@@ -87,75 +88,69 @@ pub unsafe fn configure_pmp(entry: usize, base_addr: usize, size: usize, config:
     }
 }
 
-/// Dynamically reprograms PMP Entries 1, 2, 4, and 5 to block U-mode access to all four inactive task stacks.
+/// Dynamically reprograms PMP Entries 1, 2, 4, 5, and 6, one dedicated entry
+/// per known task stack (Watchdog, Task A, Task B, Task C, HSM Task). The
+/// entry belonging to `active_task_name` is set to `Off` so that stack falls
+/// through to Entry 3's broad SRAM allow rule; every other entry blocks its
+/// stack outright. A name that matches none of the five (both idle tasks,
+/// or anything unrecognized) blocks all five -- there is no active task
+/// whose stack needs to stay reachable.
 pub unsafe fn reprogram_pmp_stack(active_task_name: &str) {
-    let addr_a = core::ptr::addr_of_mut!(crate::TASK_A_STACK) as usize;
-    let addr_b = core::ptr::addr_of_mut!(crate::TASK_B_STACK) as usize;
-    let addr_c = core::ptr::addr_of_mut!(crate::TASK_C_STACK) as usize;
-    let addr_wd = core::ptr::addr_of_mut!(crate::TASK_WD_STACK) as usize;
-    let addr_hsm = core::ptr::addr_of_mut!(crate::HSM_STACK) as usize;
+    let stacks: [(&str, usize, usize); 5] = [
+        (
+            "Watchdog",
+            core::ptr::addr_of_mut!(crate::TASK_WD_STACK) as usize,
+            1,
+        ),
+        (
+            "Task A",
+            core::ptr::addr_of_mut!(crate::TASK_A_STACK) as usize,
+            2,
+        ),
+        (
+            "Task B",
+            core::ptr::addr_of_mut!(crate::TASK_B_STACK) as usize,
+            4,
+        ),
+        (
+            "Task C",
+            core::ptr::addr_of_mut!(crate::TASK_C_STACK) as usize,
+            5,
+        ),
+        (
+            "HSM Task",
+            core::ptr::addr_of_mut!(crate::HSM_STACK) as usize,
+            6,
+        ),
+    ];
 
-    let (inactive_1, inactive_2, inactive_3, inactive_4) = match active_task_name {
-        "Watchdog" => (addr_a, addr_b, addr_c, addr_hsm),
-        "Task A" => (addr_wd, addr_b, addr_c, addr_hsm),
-        "Task B" => (addr_wd, addr_a, addr_c, addr_hsm),
-        "Task C" => (addr_wd, addr_a, addr_b, addr_hsm),
-        _ => (addr_wd, addr_a, addr_b, addr_c), // HSM active
-    };
-
-    // Reprogram Entry 1 to block inactive stack 1
-    configure_pmp(
-        1,
-        inactive_1,
-        1024,
-        PmpConfig {
-            read: false,
-            write: false,
-            execute: false,
-            mode: PmpAddressMode::Napot,
-            locked: false,
-        },
-    );
-
-    // Reprogram Entry 2 to block inactive stack 2
-    configure_pmp(
-        2,
-        inactive_2,
-        1024,
-        PmpConfig {
-            read: false,
-            write: false,
-            execute: false,
-            mode: PmpAddressMode::Napot,
-            locked: false,
-        },
-    );
-
-    // Reprogram Entry 4 to block inactive stack 3
-    configure_pmp(
-        4,
-        inactive_3,
-        1024,
-        PmpConfig {
-            read: false,
-            write: false,
-            execute: false,
-            mode: PmpAddressMode::Napot,
-            locked: false,
-        },
-    );
-
-    // Reprogram Entry 5 to block inactive stack 4
-    configure_pmp(
-        5,
-        inactive_4,
-        1024,
-        PmpConfig {
-            read: false,
-            write: false,
-            execute: false,
-            mode: PmpAddressMode::Napot,
-            locked: false,
-        },
-    );
+    for (name, addr, entry) in stacks {
+        if name == active_task_name {
+            configure_pmp(
+                entry,
+                0,
+                1024,
+                PmpConfig {
+                    read: false,
+                    write: false,
+                    execute: false,
+                    mode: PmpAddressMode::Off,
+                    locked: false,
+                },
+            );
+        } else {
+            configure_pmp(
+                entry,
+                addr,
+                1024,
+                PmpConfig {
+                    read: false,
+                    write: false,
+                    execute: false,
+                    mode: PmpAddressMode::Napot,
+                    locked: false,
+                },
+            );
+        }
+    }
 }

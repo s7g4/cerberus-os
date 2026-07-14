@@ -635,37 +635,12 @@ unsafe fn init_memory_protection() {
         },
     );
 
-    // Entry 1: Inactive Stack 1 (No Access, Unlocked)
+    // Entries 1, 2, 4, 5, 6: one dedicated slot per task stack (Watchdog,
+    // Task A, Task B, Task C, HSM). This initial "block everyone" state
+    // mirrors what `reprogram_pmp_stack` does when no task is active yet;
+    // it is immediately overwritten once the first task starts.
     configure_pmp(
         1,
-        core::ptr::addr_of!(TASK_B_STACK) as usize,
-        1024,
-        PmpConfig {
-            read: false,
-            write: false,
-            execute: false,
-            mode: PmpAddressMode::Napot,
-            locked: false,
-        },
-    );
-
-    // Entry 2: Inactive Stack 2 (No Access, Unlocked)
-    configure_pmp(
-        2,
-        core::ptr::addr_of!(TASK_C_STACK) as usize,
-        1024,
-        PmpConfig {
-            read: false,
-            write: false,
-            execute: false,
-            mode: PmpAddressMode::Napot,
-            locked: false,
-        },
-    );
-
-    // Entry 4: Inactive Stack 3 (No Access, Unlocked)
-    configure_pmp(
-        4,
         core::ptr::addr_of!(TASK_WD_STACK) as usize,
         1024,
         PmpConfig {
@@ -677,9 +652,47 @@ unsafe fn init_memory_protection() {
         },
     );
 
-    // Entry 5: HSM Stack (No Access, Unlocked)
+    configure_pmp(
+        2,
+        core::ptr::addr_of!(TASK_A_STACK) as usize,
+        1024,
+        PmpConfig {
+            read: false,
+            write: false,
+            execute: false,
+            mode: PmpAddressMode::Napot,
+            locked: false,
+        },
+    );
+
+    configure_pmp(
+        4,
+        core::ptr::addr_of!(TASK_B_STACK) as usize,
+        1024,
+        PmpConfig {
+            read: false,
+            write: false,
+            execute: false,
+            mode: PmpAddressMode::Napot,
+            locked: false,
+        },
+    );
+
     configure_pmp(
         5,
+        core::ptr::addr_of!(TASK_C_STACK) as usize,
+        1024,
+        PmpConfig {
+            read: false,
+            write: false,
+            execute: false,
+            mode: PmpAddressMode::Napot,
+            locked: false,
+        },
+    );
+
+    configure_pmp(
+        6,
         core::ptr::addr_of!(HSM_STACK) as usize,
         1024,
         PmpConfig {

@@ -1,4 +1,16 @@
 //! Trap and Interrupt handling subsystem.
+//!
+//! # `task_table` invariant
+//!
+//! This file indexes `SCHEDULERS[hart].task_table` with `.unwrap()` in many
+//! places without a bounds/`None` check. This is sound, not an oversight:
+//! every index used here is either `current_partition_idx` (the scheduler
+//! never points this at an empty slot) or a bit read out of a mutex's
+//! `waiters_bitmap` (a bit is only ever set for a slot that was `Some` at
+//! the moment it blocked, and slots are never reset to `None` after boot
+//! registration -- only their `TaskState` changes). The one genuinely
+//! external, syscall-supplied index (`target_prio` in the terminate-task
+//! syscall) is bounds-checked and read via `if let`, not `.unwrap()`.
 
 #![allow(unused_variables)]
 
